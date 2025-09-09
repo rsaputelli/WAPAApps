@@ -112,13 +112,29 @@ def build_summary_excel(member_type_totals: pd.DataFrame,
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         member_type_totals.to_excel(writer, index=False, sheet_name="Member Type Totals")
         membership_breakdown.to_excel(writer, index=False, sheet_name="Membership Breakdown")
-        # Optional: autofit
-        for sheet in ["Member Type Totals", "Membership Breakdown"]:
-            ws = writer.sheets[sheet]
-            for i, col in enumerate(pd.read_excel(io.BytesIO(buf.getvalue()), sheet_name=sheet).columns):
-                ws.set_column(i, i, 28)
+
+        wb = writer.book
+        # Optional header format
+        header_fmt = wb.add_format({"bold": True})
+
+        for sheet_name, df in [
+            ("Member Type Totals", member_type_totals),
+            ("Membership Breakdown", membership_breakdown),
+        ]:
+            ws = writer.sheets[sheet_name]
+            # Bold header row
+            ws.set_row(0, None, header_fmt)
+
+            # Set column widths without re-reading the file
+            for i, col in enumerate(df.columns):
+                # Heuristic: header width vs first 100 values
+                samples = df[col].astype(str).head(100).tolist()
+                max_len = max([len(str(col))] + [len(s) for s in samples])
+                ws.set_column(i, i, min(max_len + 2, 40))  # pad a bit, cap at 40
+
     buf.seek(0)
     return buf.read()
+
 
 
 MONTH_RE = re.compile(r"(\d{4})[-_]?(\d{2})")  # prefer YYYY-MM or YYYYMM in filename
