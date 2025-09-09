@@ -277,7 +277,29 @@ with tab1:
         fig1, fig2 = make_charts_from_summary(member_type_totals, membership_breakdown, title_prefix="WAPA")
         st.pyplot(fig1, use_container_width=True)
         st.pyplot(fig2, use_container_width=True)
-
+        
+        # Chart download buttons
+        import io
+        buf1 = io.BytesIO()
+        fig1.savefig(buf1, format="png", bbox_inches="tight")
+        buf1.seek(0)
+        st.download_button(
+            "Download Total Members Chart (PNG)",
+            data=buf1,
+            file_name=f"WAPA_Total_Members_{RUN_DATE_STR}.png",
+            mime="image/png"
+        )
+        
+        buf2 = io.BytesIO()
+        fig2.savefig(buf2, format="png", bbox_inches="tight")
+        buf2.seek(0)
+        st.download_button(
+            "Download Membership Breakdown Chart (PNG)",
+            data=buf2,
+            file_name=f"WAPA_Membership_Breakdown_{RUN_DATE_STR}.png",
+            mime="image/png"
+        )
+        
         # Download Excel
         out_bytes = build_summary_excel(member_type_totals, membership_breakdown)
         out_name = f"Member_Type_Summary_{RUN_DATE_STR}.xlsx"
@@ -287,6 +309,7 @@ with tab1:
             file_name=out_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
 
 with tab2:
     st.subheader("Upload multiple monthly summary Excel files")
