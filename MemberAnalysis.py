@@ -248,8 +248,27 @@ def aggregate_summaries_to_master(files: List) -> bytes:
 
 st.set_page_config(page_title="WAPA – Member Summary & Trends", layout="wide")
 
-st.title("WAPA – Member Type Summary & Trend Builder")
-st.caption(f"Run Date: {RUN_DATE_STR}")
+# --- Header with logo on the left and title on the right ---
+LOGO_PATH = Path(__file__).parent / "logo.png"
+
+left, right = st.columns([1, 8])
+
+with left:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=72)  # adjust as desired
+    else:
+        st.write("")  # spacer if logo missing
+
+with right:
+    st.markdown(
+        f"""
+        <div style="padding-top:6px;">
+          <h1 style="margin-bottom:0;">WAPA – Member Type Summary & Trend Builder</h1>
+          <p style="color:#666; margin-top:4px;">Run Date: {RUN_DATE_STR}</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 tab1, tab2 = st.tabs(["1) Create Monthly Summary from Raw Export", "2) Build Master Workbook from Summaries"])
 
