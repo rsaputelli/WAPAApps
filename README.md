@@ -5,6 +5,8 @@ _User Guide & Instructions_
 
 Before using the app, you need to export the raw membership data from YourMembership.
 
+### IMPORTANT:  You should try to run this as close to the first of the month as possible.
+
 ### Steps
 1. **Navigate to Exports & Reporting**  
    In the YM admin dashboard, go to **Exports & Reporting**.  
@@ -51,6 +53,7 @@ The Streamlit app has two main functions:
 - Download buttons are available for:
   - Both charts (as PNG images).  
   - The summary Excel file (`Member_Type_Summary_YYYY-MM-DD.xlsx`) containing both tables.
+### IMPORTANT – You MUST SAVE the output file in Dropbox so that you have it later.  If you try to recreate the report at a later date and people have renewed, the data will be skewed.
 
 ### 2) Build a Master Workbook from Multiple Summaries
 - Go to the **second tab**: _“Build Master Workbook from Summaries”_.  
