@@ -255,7 +255,7 @@ left, right = st.columns([1, 8])
 
 with left:
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=72)  # adjust as desired
+        st.image(str(LOGO_PATH), width=340)  # adjust as desired
     else:
         st.write("")  # spacer if logo missing
 
