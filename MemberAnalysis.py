@@ -389,13 +389,4 @@ with tab2:
     # add charts to legacy workbook
     from openpyxl.chart import BarChart, Reference
     # Chart on Member Type Totals
-    ws = wb["Member Type Totals"]
-    chart = BarChart()
-    chart.type = "col"
-    chart.title = "Member Type Totals"
-    data_ref = Reference(ws, min_col=2, min_row=1, max_col=2, max_row=ws.max_row)
-    cats_ref = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-    chart.add_data(data_ref, titles_from_data=True)
-    chart.set_categories(cats_ref)
-    ws.add_chart(chart, "E2")
 
