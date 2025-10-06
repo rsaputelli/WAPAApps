@@ -160,6 +160,31 @@ def preprocess_input(df_raw: pd.DataFrame, mode: str = "auto"):
     return df_clean, info
 
 # ============================
+# Legacy summary detectors (no Website ID)
+# ============================
+def is_legacy_totals(df: pd.DataFrame) -> bool:
+    cols = set([c.strip() for c in df.columns])
+    # Our legacy export uses columns: 'index' and 'Member/Non-Member - Member Type'
+    return {"index", "Member/Non-Member - Member Type"}.issubset(cols)
+
+def to_totals_from_legacy(df: pd.DataFrame) -> pd.DataFrame:
+    # Standardize to columns: Member Type, count
+    out = df.rename(columns={
+        "index": "Member Type",
+        "Member/Non-Member - Member Type": "count"
+    })[["Member Type","count"]].copy()
+    out["Member Type"] = out["Member Type"].astype(str)
+    out["count"] = pd.to_numeric(out["count"], errors="coerce").fillna(0).astype(int)
+    return out
+
+def to_totals_from_members(df: pd.DataFrame) -> pd.DataFrame:
+    # From member-level rows, aggregate by RAW_MEMBER_TYPE_COL
+    if RAW_MEMBER_TYPE_COL not in df.columns:
+        return pd.DataFrame(columns=["Member Type","count"])
+    tot = df[RAW_MEMBER_TYPE_COL].fillna("(blank)").astype(str).value_counts().sort_index()
+    return tot.rename_axis("Member Type").reset_index(name="count")
+
+# ============================
 # Excel builder for legacy MoM output
 # ============================
 def build_legacy_summary_xlsx(totals_df: pd.DataFrame, membership_breakdown: pd.DataFrame) -> bytes:
@@ -284,7 +309,9 @@ with tab2:
         f_right = st.file_uploader("Right report (e.g., This Month)", type=["csv","xlsx","xls"], key="right")
         mode_right = st.radio("Right report type", ["Auto","Transaction-level","Member-level"], index=0, horizontal=True, key="mode_right")
 
+
     if f_left and f_right:
+        # Read
         df_left_raw, used_left_sheet = _read_any_table(f_left)
         if used_left_sheet:
             st.caption(f"Left: using sheet '{used_left_sheet}'")
@@ -303,51 +330,101 @@ with tab2:
         with colB:
             st.json(info_right)
 
-        # Compare by Website ID
-        left_ids  = set(df_left[ID_COL].dropna().astype(str)) if ID_COL in df_left.columns else set()
-        right_ids = set(df_right[ID_COL].dropna().astype(str)) if ID_COL in df_right.columns else set()
-        in_both   = sorted(left_ids & right_ids)
-        only_left = sorted(left_ids - right_ids)
-        only_right= sorted(right_ids - left_ids)
+        # Two modes:
+        # A) ID-based comparison when both dataframes have Website ID
+        # B) Totals-based comparison when either side lacks IDs (e.g., legacy summary workbooks)
+        has_ids_left = ID_COL in df_left.columns
+        has_ids_right = ID_COL in df_right.columns
 
-        df_both = df_left[df_left[ID_COL].astype(str).isin(in_both)].copy()
-        df_only_left = df_left[df_left[ID_COL].astype(str).isin(only_left)].copy()
-        df_only_right = df_right[df_right[ID_COL].astype(str).isin(only_right)].copy()
+        # Detect legacy totals sheets
+        left_legacy = is_legacy_totals(df_left_raw)
+        right_legacy = is_legacy_totals(df_right_raw)
 
-        st.markdown("### Results")
-        st.write({
-            "Overlap (members in both)": len(in_both),
-            "Only in Left": len(only_left),
-            "Only in Right": len(only_right),
-        })
+        if has_ids_left and has_ids_right:
+            # ---- ID-based (Overlap / Only in Left / Only in Right) ----
+            left_ids  = set(df_left[ID_COL].dropna().astype(str))
+            right_ids = set(df_right[ID_COL].dropna().astype(str))
+            in_both   = sorted(left_ids & right_ids)
+            only_left = sorted(left_ids - right_ids)
+            only_right= sorted(right_ids - left_ids)
 
-        st.markdown("#### Overlap (Both)")
-        cols_needed = [ID_COL, "Member/Non-Member - First Name", "Member/Non-Member - Last Name",
-                       "Member/Non-Member - Email", RAW_MEMBER_TYPE_COL, EXP_COL, LAST_DUES_COL]
-        cols_present = [c for c in cols_needed if c in df_both.columns]
-        st.dataframe(df_both[cols_present].sort_values(by=ID_COL), use_container_width=True)
+            df_both = df_left[df_left[ID_COL].astype(str).isin(in_both)].copy()
+            df_only_left = df_left[df_left[ID_COL].astype(str).isin(only_left)].copy()
+            df_only_right = df_right[df_right[ID_COL].astype(str).isin(only_right)].copy()
 
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown("#### Only in Left")
-            cols_present_l = [c for c in cols_needed if c in df_only_left.columns]
-            st.dataframe(df_only_left[cols_present_l].sort_values(by=ID_COL), use_container_width=True)
-        with c4:
-            st.markdown("#### Only in Right")
-            cols_present_r = [c for c in cols_needed if c in df_only_right.columns]
-            st.dataframe(df_only_right[cols_present_r].sort_values(by=ID_COL), use_container_width=True)
+            st.markdown("### Results (Member-level)")
+            st.write({
+                "Overlap (members in both)": len(in_both),
+                "Only in Left": len(only_left),
+                "Only in Right": len(only_right),
+            })
 
-        frames = {
-            "Overlap (Both)": df_both[cols_present] if cols_present else df_both,
-            "Only in Left": df_only_left[cols_present_l] if cols_present_l else df_only_left,
-            "Only in Right": df_only_right[cols_present_r] if cols_present_r else df_only_right,
-        }
-        xlsx_bytes = xlsx_from_frames(frames)
-        st.download_button(
-            "Download comparison workbook (.xlsx)",
-            data=xlsx_bytes,
-            file_name="Report_Comparison.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            st.markdown("#### Overlap (Both)")
+            cols_needed = [ID_COL, "Member/Non-Member - First Name", "Member/Non-Member - Last Name",
+                           "Member/Non-Member - Email", RAW_MEMBER_TYPE_COL, EXP_COL, LAST_DUES_COL]
+            cols_present = [c for c in cols_needed if c in df_both.columns]
+            st.dataframe(df_both[cols_present].sort_values(by=ID_COL), use_container_width=True)
+
+            c3, c4 = st.columns(2)
+            with c3:
+                st.markdown("#### Only in Left")
+                cols_present_l = [c for c in cols_needed if c in df_only_left.columns]
+                st.dataframe(df_only_left[cols_present_l].sort_values(by=ID_COL), use_container_width=True)
+            with c4:
+                st.markdown("#### Only in Right")
+                cols_present_r = [c for c in cols_needed if c in df_only_right.columns]
+                st.dataframe(df_only_right[cols_present_r].sort_values(by=ID_COL), use_container_width=True)
+
+            frames = {
+                "Overlap (Both)": df_both[cols_present] if cols_present else df_both,
+                "Only in Left": df_only_left[cols_present_l] if cols_present_l else df_only_left,
+                "Only in Right": df_only_right[cols_present_r] if cols_present_r else df_only_right,
+            }
+            xlsx_bytes = xlsx_from_frames(frames)
+            st.download_button(
+                "Download comparison workbook (.xlsx)",
+                data=xlsx_bytes,
+                file_name="Report_Comparison.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        else:
+            # ---- Totals-based comparison (no IDs present on at least one side) ----
+            # Convert each side to a totals table [Member Type, count]
+            if left_legacy:
+                totals_left = to_totals_from_legacy(df_left_raw)
+            else:
+                totals_left = to_totals_from_members(df_left)
+            if right_legacy:
+                totals_right = to_totals_from_legacy(df_right_raw)
+            else:
+                totals_right = to_totals_from_members(df_right)
+
+            # Align on member types
+            all_types = sorted(set(totals_left["Member Type"]).union(set(totals_right["Member Type"])))
+            df_comp = pd.DataFrame({"Member Type": all_types})
+            df_comp = df_comp.merge(totals_left.rename(columns={"count":"Left count"}), on="Member Type", how="left")
+            df_comp = df_comp.merge(totals_right.rename(columns={"count":"Right count"}), on="Member Type", how="left")
+            df_comp["Left count"] = df_comp["Left count"].fillna(0).astype(int)
+            df_comp["Right count"] = df_comp["Right count"].fillna(0).astype(int)
+            df_comp["Delta (Right-Left)"] = df_comp["Right count"] - df_comp["Left count"]
+
+            st.markdown("### Results (Summary-level)")
+            st.dataframe(df_comp, use_container_width=True)
+
+            # Download CSV and Excel for this comparison
+            csv_buf = io.StringIO()
+            df_comp.to_csv(csv_buf, index=False)
+            st.download_button("Download summary comparison (.csv)", data=csv_buf.getvalue(),
+                               file_name="Summary_Comparison.csv", mime="text/csv")
+
+            frames = {"Summary Comparison": df_comp}
+            xlsx_bytes = xlsx_from_frames(frames)
+            st.download_button(
+                "Download summary comparison (.xlsx)",
+                data=xlsx_bytes,
+                file_name="Summary_Comparison.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     else:
         st.info("Upload two files to run the comparison.")
