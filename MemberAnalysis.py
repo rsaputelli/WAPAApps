@@ -3,6 +3,7 @@ import io
 import pandas as pd
 import streamlit as st
 import altair as alt
+import re
 
 # ============================
 # Constants
@@ -50,6 +51,21 @@ def compute_summary_from_raw(df: pd.DataFrame):
 
 # ============================
 # Preprocessing helpers
+
+# ============================
+# Filename/date helpers
+# ============================
+def _date_prefix_today():
+    import datetime as _dt
+    return _dt.date.today().strftime("%Y.%m.%d")
+
+_DATE_PATTERN = re.compile(r"^(\d{4}\.\d{2}\.\d{2})[_\-]")
+
+def _extract_date_label(uploaded_file, fallback: str) -> str:
+    name = getattr(uploaded_file, "name", "")
+    m = _DATE_PATTERN.match(name)
+    return m.group(1) if m else fallback
+
 
 # ============================
 # File loader (CSV or Excel)
@@ -282,20 +298,22 @@ with tab1:
 
         # Legacy export
         legacy_bytes = build_legacy_summary_xlsx(totals_df, membership_breakdown)
+        prefix = _date_prefix_today()
         st.download_button(
             "Download Member_Type_Summary.xlsx (legacy format)",
             data=legacy_bytes,
-            file_name="Member_Type_Summary.xlsx",
+            file_name=f"{prefix}_Member_Type_Summary.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
         # Cleaned CSV
         csv_buf = io.StringIO()
         df_clean.to_csv(csv_buf, index=False)
+        prefix = _date_prefix_today()
         st.download_button(
             "Download cleaned member-level CSV",
             data=csv_buf.getvalue(),
-            file_name="member_level_clean.csv",
+            file_name=f"{prefix}_member_level_clean.csv",
             mime="text/csv"
         )
 
@@ -353,6 +371,52 @@ with tab2:
             df_only_right = df_right[df_right[ID_COL].astype(str).isin(only_right)].copy()
 
             st.markdown("### Results (Member-level)")
+            # Build totals for charts (Left vs Right by Member Type)
+            left_totals_df = to_totals_from_members(df_left)
+            right_totals_df = to_totals_from_members(df_right)
+            left_label = _extract_date_label(f_left, "Left")
+            right_label = _extract_date_label(f_right, "Right")
+
+            # Merge for side-by-side bars
+            comp_chart_df = pd.merge(
+                left_totals_df.rename(columns={"count": left_label}),
+                right_totals_df.rename(columns={"count": right_label}),
+                on="Member Type",
+                how="outer"
+            ).fillna(0)
+
+            import altair as alt
+            chart_source = comp_chart_df.melt(id_vars=["Member Type"], var_name="Report", value_name="Count")
+            st.markdown("#### Member Type — Counts")
+            chart1 = (
+                alt.Chart(chart_source)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Member Type:N", sort=None),
+                    y=alt.Y("Count:Q"),
+                    color="Report:N",
+                    column=alt.Column("Report:N", header=alt.Header(title=f"{left_label} vs {right_label}")),
+                    tooltip=["Member Type","Report","Count"]
+                )
+                .properties(height=250)
+            )
+            st.altair_chart(chart1, use_container_width=True)
+
+            # Delta chart
+            comp_chart_df["Delta (Right-Left)"] = comp_chart_df[right_label] - comp_chart_df[left_label]
+            st.markdown("#### Member Type — Change (Right - Left)")
+            chart2 = (
+                alt.Chart(comp_chart_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Member Type:N", sort=None),
+                    y=alt.Y("Delta (Right-Left):Q"),
+                    tooltip=["Member Type","Delta (Right-Left)"]
+                )
+                .properties(title=f"Change: {right_label} minus {left_label}", height=250)
+            )
+            st.altair_chart(chart2, use_container_width=True)
+
             st.write({
                 "Overlap (members in both)": len(in_both),
                 "Only in Left": len(only_left),
@@ -381,10 +445,11 @@ with tab2:
                 "Only in Right": df_only_right[cols_present_r] if cols_present_r else df_only_right,
             }
             xlsx_bytes = xlsx_from_frames(frames)
+            prefix = _date_prefix_today()
             st.download_button(
                 "Download comparison workbook (.xlsx)",
                 data=xlsx_bytes,
-                file_name="Report_Comparison.xlsx",
+                file_name=f"{prefix}_Report_Comparison.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
@@ -410,20 +475,56 @@ with tab2:
             df_comp["Delta (Right-Left)"] = df_comp["Right count"] - df_comp["Left count"]
 
             st.markdown("### Results (Summary-level)")
+            # Charts for summary-level files
+            left_label = _extract_date_label(f_left, "Left")
+            right_label = _extract_date_label(f_right, "Right")
+            chart_df = df_comp.melt(id_vars=["Member Type"], value_vars=["Left count","Right count"], var_name="Report", value_name="Count")
+            # Normalize labels
+            chart_df["Report"] = chart_df["Report"].replace({"Left count": left_label, "Right count": right_label})
+
+            st.markdown("#### Member Type — Counts")
+            chart1 = (
+                alt.Chart(chart_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Member Type:N", sort=None),
+                    y=alt.Y("Count:Q"),
+                    color="Report:N",
+                    tooltip=["Member Type","Report","Count"]
+                )
+                .properties(title=f"{left_label} vs {right_label}", height=250)
+            )
+            st.altair_chart(chart1, use_container_width=True)
+
+            st.markdown("#### Member Type — Change (Right - Left)")
+            chart2 = (
+                alt.Chart(df_comp)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Member Type:N", sort=None),
+                    y=alt.Y("Delta (Right-Left):Q"),
+                    tooltip=["Member Type","Delta (Right-Left)"]
+                )
+                .properties(title=f"Change: {right_label} minus {left_label}", height=250)
+            )
+            st.altair_chart(chart2, use_container_width=True)
+
             st.dataframe(df_comp, use_container_width=True)
 
             # Download CSV and Excel for this comparison
             csv_buf = io.StringIO()
             df_comp.to_csv(csv_buf, index=False)
+            prefix = _date_prefix_today()
             st.download_button("Download summary comparison (.csv)", data=csv_buf.getvalue(),
-                               file_name="Summary_Comparison.csv", mime="text/csv")
+                               file_name=f"{prefix}_Summary_Comparison.csv", mime="text/csv")
 
             frames = {"Summary Comparison": df_comp}
             xlsx_bytes = xlsx_from_frames(frames)
+            prefix = _date_prefix_today()
             st.download_button(
                 "Download summary comparison (.xlsx)",
                 data=xlsx_bytes,
-                file_name="Summary_Comparison.xlsx",
+                file_name=f"{prefix}_Summary_Comparison.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     else:
