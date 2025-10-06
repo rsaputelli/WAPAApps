@@ -50,6 +50,46 @@ def compute_summary_from_raw(df: pd.DataFrame):
 
 # ============================
 # Preprocessing helpers
+
+# ============================
+# File loader (CSV or Excel)
+# ============================
+def _read_any_table(uploaded_file, sheet_hint: str = None):
+    """
+    Reads CSV or Excel. If Excel and sheet_hint provided, try that first.
+    Otherwise, pick the first sheet that contains the Website ID column.
+    Returns (DataFrame, used_sheet_name or None)
+    """
+    name = getattr(uploaded_file, "name", "").lower()
+    try:
+        if name.endswith(".csv"):
+            try:
+                return pd.read_csv(uploaded_file), None
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                return pd.read_csv(uploaded_file, encoding="latin-1"), None
+        else:
+            # Excel
+            xls = pd.ExcelFile(uploaded_file)
+            # Try sheet hint
+            if sheet_hint and sheet_hint in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet_hint)
+                return df, sheet_hint
+            # Try to find a sheet with Website ID
+            for sh in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sh)
+                if ID_COL in df.columns:
+                    return df, sh
+            # Fallback: first sheet
+            sh = xls.sheet_names[0]
+            df = pd.read_excel(xls, sheet_name=sh)
+            return df, sh
+    finally:
+        try:
+            uploaded_file.seek(0)
+        except Exception:
+            pass
+
 # ============================
 def _normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: c.strip() for c in df.columns}).rename(columns=HEADER_MAP)
@@ -174,14 +214,13 @@ tab1, tab2 = st.tabs(["Generate Monthly Member Summary", "Analyze Month-Over-Mon
 
 # ---------------- Tab 1: Summary ----------------
 with tab1:
-    uploaded = st.file_uploader("Choose CSV export", type=["csv"], key="single")
+    uploaded = st.file_uploader("Choose CSV export", type=["csv","xlsx","xls"], key="single")
     if uploaded is None:
         st.info("Upload a YM CSV: either 'Today & After' (transaction-level) or 'As-of' (member-level).")
     else:
-        try:
-            df_raw = pd.read_csv(uploaded)
-        except UnicodeDecodeError:
-            df_raw = pd.read_csv(uploaded, encoding="latin-1")
+        df_raw, used_sheet = _read_any_table(uploaded) 
+        if used_sheet:
+            st.caption(f"Using sheet: {used_sheet}")
 
         st.caption(f"Raw columns ({len(df_raw.columns)}): {list(df_raw.columns)}")
 
@@ -239,21 +278,19 @@ with tab1:
 with tab2:
     c1, c2 = st.columns(2)
     with c1:
-        f_left = st.file_uploader("Left report (e.g., Last Month)", type=["csv"], key="left")
+        f_left = st.file_uploader("Left report (e.g., Last Month)", type=["csv","xlsx","xls"], key="left")
         mode_left = st.radio("Left report type", ["Auto","Transaction-level","Member-level"], index=0, horizontal=True, key="mode_left")
     with c2:
-        f_right = st.file_uploader("Right report (e.g., This Month)", type=["csv"], key="right")
+        f_right = st.file_uploader("Right report (e.g., This Month)", type=["csv","xlsx","xls"], key="right")
         mode_right = st.radio("Right report type", ["Auto","Transaction-level","Member-level"], index=0, horizontal=True, key="mode_right")
 
     if f_left and f_right:
-        try:
-            df_left_raw = pd.read_csv(f_left)
-        except UnicodeDecodeError:
-            df_left_raw = pd.read_csv(f_left, encoding="latin-1")
-        try:
-            df_right_raw = pd.read_csv(f_right)
-        except UnicodeDecodeError:
-            df_right_raw = pd.read_csv(f_right, encoding="latin-1")
+        df_left_raw, used_left_sheet = _read_any_table(f_left)
+        if used_left_sheet:
+            st.caption(f"Left: using sheet '{used_left_sheet}'")
+        df_right_raw, used_right_sheet = _read_any_table(f_right)
+        if used_right_sheet:
+            st.caption(f"Right: using sheet '{used_right_sheet}'")
 
         m = {"Auto":"auto","Transaction-level":"transaction","Member-level":"member"}
         df_left, info_left = preprocess_input(df_left_raw, mode=m[mode_left])
