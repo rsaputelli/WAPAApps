@@ -19,6 +19,85 @@ RUN_DATE_STR = datetime.today().strftime("%Y-%m-%d")
 RAW_MEMBER_TYPE_COL = "Member/Non-Member - Member Type"
 RAW_MEMBERSHIP_COL   = "Member/Non-Member - Membership"
 
+# ---------------------------
+# Report-agnostic preprocessor
+# ---------------------------
+TRANSACTION_HINT_COLS = {"Dues - Amount", "Dues - Date Processed", "Dues - Date Submitted"}
+ID_COL = "Member/Non-Member - Website ID"
+LAST_DUES_COL = "Member/Non-Member - Date Last Dues Transaction"
+EXP_COL = "Member/Non-Member - Date Membership Expires"
+
+HEADER_MAP = {
+    "Member Type - Member Type": "Member/Non-Member - Member Type",
+    "Dues - Membership": "Member/Non-Member - Membership",
+    "Member/Non-Member - Date Membership Expires": EXP_COL,
+    "Member/Non-Member - Date Last Dues Transaction": LAST_DUES_COL,
+    "Member/Non-Member - Website ID": ID_COL,
+    "Member/Non-Member - Email": "Member/Non-Member - Email",
+    "Member/Non-Member - First Name": "Member/Non-Member - First Name",
+    "Member/Non-Member - Last Name": "Member/Non-Member - Last Name",
+}
+
+def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
+    cols = {c: c.strip() for c in df.columns}
+    df = df.rename(columns=cols)
+    # Apply known YM header harmonization
+    df = df.rename(columns=HEADER_MAP)
+    return df
+
+def detect_report_type(df: pd.DataFrame) -> str:
+    cols = set(df.columns)
+    has_trans_cols = TRANSACTION_HINT_COLS.issubset(cols)
+    has_dupes = False
+    if ID_COL in df.columns:
+        try:
+            has_dupes = df[ID_COL].duplicated().any()
+        except Exception:
+            has_dupes = False
+    return "transaction" if (has_trans_cols or has_dupes) else "member"
+
+def dedup_transaction_frame(df: pd.DataFrame) -> pd.DataFrame:
+    # Prefer non-student, newest dues, latest expiration, then smallest ID
+    df = df.copy()
+    # parse dates
+    for c in [LAST_DUES_COL, EXP_COL]:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+    is_student = df.get("Member/Non-Member - Member Type", pd.Series(dtype=object)).astype(str).str.strip().str.lower().eq("student")
+    df["__is_student"] = is_student
+    df = df.sort_values(
+        by=["__is_student", LAST_DUES_COL, EXP_COL, ID_COL],
+        ascending=[True, False, False, True]
+    )
+    out = df.drop_duplicates(subset=[ID_COL], keep="first").drop(columns="__is_student", errors="ignore")
+    return out
+
+def preprocess_input(df_raw: pd.DataFrame, mode: str = "auto") -> tuple[pd.DataFrame, dict]:
+    df = normalize_headers(df_raw)
+    detected = detect_report_type(df) if mode == "auto" else mode
+    info = {"detected_mode": detected}
+
+    if detected == "transaction":
+        df_clean = dedup_transaction_frame(df)
+        info.update({
+            "rows_in": len(df),
+            "rows_out": len(df_clean),
+            "unique_ids_in": df[ID_COL].nunique() if ID_COL in df.columns else None,
+            "unique_ids_out": df_clean[ID_COL].nunique() if ID_COL in df_clean.columns else None,
+            "dedup_applied": True,
+        })
+    else:
+        # member-level, pass through
+        df_clean = df
+        info.update({
+            "rows_in": len(df),
+            "rows_out": len(df_clean),
+            "unique_ids_in": df[ID_COL].nunique() if ID_COL in df.columns else None,
+            "unique_ids_out": df_clean[ID_COL].nunique() if ID_COL in df_clean.columns else None,
+            "dedup_applied": False,
+        })
+    return df_clean, info
+
 def compute_summary_from_raw(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Returns:
@@ -285,7 +364,24 @@ with tab1:
 
         st.write("Preview:", df_raw.head())
 
-        member_type_totals, membership_breakdown = compute_summary_from_raw(df_raw)
+        
+# Report type toggle
+mode = st.radio("Report type", options=["Auto","Transaction-level","Member-level"], index=0, horizontal=True)
+mode_map = {"Auto":"auto","Transaction-level":"transaction","Member-level":"member"}
+df_clean, info = preprocess_input(df_raw, mode=mode_map[mode])
+with st.expander("Input detection & dedup summary", expanded=False):
+    st.write(info)
+    st.write("First rows after preprocessing:", df_clean.head())
+
+# Use cleaned frame for all summaries
+member_type_totals, membership_breakdown = compute_summary_from_raw(df_clean)
+
+# Offer the cleaned CSV for download
+import io
+csv_buf = io.StringIO()
+df_clean.to_csv(csv_buf, index=False)
+st.download_button("Download cleaned member-level CSV", data=csv_buf.getvalue(), file_name="member_level_clean.csv", mime="text/csv")
+
 
         # Show dataframes
         st.markdown("**Member Type Totals**")
@@ -386,3 +482,4 @@ with tab2:
 
         except Exception as e:
             st.error(str(e))
+
