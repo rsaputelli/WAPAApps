@@ -1,289 +1,422 @@
-
 import io
+import re
+from datetime import datetime
+from typing import Tuple, Dict, List
+
 import pandas as pd
 import streamlit as st
-import altair as alt
+import matplotlib.pyplot as plt
+from pathlib import Path
+from datetime import datetime
 
-# ============================
-# Constants
-# ============================
+
+# ---------------------------
+# Helpers
+# ---------------------------
+
+RUN_DATE_STR = datetime.today().strftime("%Y-%m-%d")
+
 RAW_MEMBER_TYPE_COL = "Member/Non-Member - Member Type"
-RAW_MEMBERSHIP_COL  = "Member/Non-Member - Membership"
+RAW_MEMBERSHIP_COL   = "Member/Non-Member - Membership"
 
-ID_COL        = "Member/Non-Member - Website ID"
-LAST_DUES_COL = "Member/Non-Member - Date Last Dues Transaction"
-EXP_COL       = "Member/Non-Member - Date Membership Expires"
+def compute_summary_from_raw(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Returns:
+      member_type_totals: DataFrame with columns [Member Type, Count]
+      membership_breakdown: DataFrame with columns [Member Type, Membership, Count]
+    """
+    # Clean column names (robust to light changes)
+    cols = {c: c.strip() for c in df.columns}
+    df = df.rename(columns=cols)
 
-TRANSACTION_HINT_COLS = {"Dues - Amount", "Dues - Date Processed", "Dues - Date Submitted"}
+    # Basic guards
+    for need in [RAW_MEMBER_TYPE_COL, RAW_MEMBERSHIP_COL]:
+        if need not in df.columns:
+            raise ValueError(f"Expected column not found: {need}")
 
-HEADER_MAP = {
-    "Member Type - Member Type": RAW_MEMBER_TYPE_COL,
-    "Dues - Membership": RAW_MEMBERSHIP_COL,
-    "Member/Non-Member - Date Membership Expires": EXP_COL,
-    "Member/Non-Member - Date Last Dues Transaction": LAST_DUES_COL,
-    "Member/Non-Member - Website ID": ID_COL,
-    "Member/Non-Member - Email": "Member/Non-Member - Email",
-    "Member/Non-Member - First Name": "Member/Non-Member - First Name",
-    "Member/Non-Member - Last Name": "Member/Non-Member - Last Name",
-}
-
-# ============================
-# Core summary (same outputs)
-# ============================
-def compute_summary_from_raw(df: pd.DataFrame):
-    if RAW_MEMBER_TYPE_COL not in df.columns or RAW_MEMBERSHIP_COL not in df.columns:
-        raise ValueError(
-            f"Required columns missing. Expected: '{RAW_MEMBER_TYPE_COL}' and '{RAW_MEMBERSHIP_COL}'. "
-            f"Got: {list(df.columns)}"
-        )
-
-    member_type_totals = df[RAW_MEMBER_TYPE_COL].value_counts(dropna=False).sort_index()
-
-    membership_breakdown = (
-        df[[RAW_MEMBER_TYPE_COL, RAW_MEMBERSHIP_COL]]
-        .value_counts(dropna=False)
-        .rename("count")
-        .reset_index()
-        .sort_values([RAW_MEMBER_TYPE_COL, RAW_MEMBERSHIP_COL])
+    # Member Type totals
+    member_type_totals = (
+        df[RAW_MEMBER_TYPE_COL]
+        .value_counts()
+        .rename_axis("Member Type")
+        .reset_index(name="Count")
+        .sort_values("Member Type", kind="stable")
     )
+
+    # Membership breakdown within Member Type
+    membership_breakdown = (
+        df.groupby([RAW_MEMBER_TYPE_COL, RAW_MEMBERSHIP_COL])
+          .size()
+          .reset_index(name="Count")
+          .rename(columns={
+              RAW_MEMBER_TYPE_COL: "Member Type",
+              RAW_MEMBERSHIP_COL: "Membership"
+          })
+          .sort_values(["Member Type", "Membership"], kind="stable")
+    )
+
     return member_type_totals, membership_breakdown
 
-# ============================
-# Preprocessing helpers
-# ============================
-def _normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
-    return df.rename(columns={c: c.strip() for c in df.columns}).rename(columns=HEADER_MAP)
 
-def _detect_report_type(df: pd.DataFrame) -> str:
-    cols = set(df.columns)
-    has_trans_cols = TRANSACTION_HINT_COLS.issubset(cols)
-    has_dupes = (ID_COL in df.columns) and df[ID_COL].duplicated().any()
-    return "transaction" if (has_trans_cols or has_dupes) else "member"
+def make_charts_from_summary(
+    member_type_totals: pd.DataFrame,
+    membership_breakdown: pd.DataFrame,
+    title_prefix: str = "WAPA"
+) -> Tuple[plt.Figure, plt.Figure]:
+    """Builds the 2 charts and returns matplotlib Figures."""
 
-def _dedup_transaction_frame(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    for c in (LAST_DUES_COL, EXP_COL):
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce")
-    is_student = (
-        df.get(RAW_MEMBER_TYPE_COL, pd.Series(dtype=object))
-          .astype(str).str.strip().str.lower().eq("student")
+    # 1) Bar chart – totals by Member Type (with numbers above bars)
+    counts = member_type_totals.set_index("Member Type")["Count"]
+    fig1, ax1 = plt.subplots(figsize=(10, 6))
+    counts.plot(kind="bar", ax=ax1)
+    ax1.set_title(f"{title_prefix} - Total Members by Member Type\nRun Date: {RUN_DATE_STR}")
+    ax1.set_xlabel("Member Type")
+    ax1.set_ylabel("Count")
+    ax1.tick_params(axis="x", rotation=45)
+    for p in ax1.patches:
+        ax1.annotate(
+            f"{int(p.get_height())}",
+            (p.get_x() + p.get_width() / 2., p.get_height()),
+            ha="center", va="bottom", fontsize=9, xytext=(0, 3),
+            textcoords="offset points"
+        )
+    fig1.tight_layout()
+
+    # 2) Stacked bar with legend counts (clean legend, no per-segment labels)
+    pivot = (
+        membership_breakdown
+        .pivot(index="Member Type", columns="Membership", values="Count")
+        .fillna(0)
+        .astype(int)
+        .sort_index()
     )
-    df["__is_student"] = is_student
-    sort_cols, asc = ["__is_student"], [True]
-    if LAST_DUES_COL in df.columns:
-        sort_cols.append(LAST_DUES_COL); asc.append(False)
-    if EXP_COL in df.columns:
-        sort_cols.append(EXP_COL); asc.append(False)
-    if ID_COL in df.columns:
-        sort_cols.append(ID_COL); asc.append(True)
-    df = df.sort_values(by=sort_cols, ascending=asc)
-    out = df.drop_duplicates(subset=[ID_COL], keep="first").drop(columns="__is_student", errors="ignore")
-    return out
 
-def preprocess_input(df_raw: pd.DataFrame, mode: str = "auto"):
-    df = _normalize_headers(df_raw)
+    # Build legend with totals across all Member Types
+    membership_totals = pivot.sum(axis=0).to_dict()
+    legend_labels = [f"{m} ({membership_totals.get(m, 0)})" for m in pivot.columns]
 
-    # Ensure required columns exist even if original headers vary
-    if RAW_MEMBER_TYPE_COL not in df.columns and "Member Type - Member Type" in df.columns:
-        df = df.rename(columns={"Member Type - Member Type": RAW_MEMBER_TYPE_COL})
-    if RAW_MEMBERSHIP_COL not in df.columns and "Dues - Membership" in df.columns:
-        df = df.rename(columns={"Dues - Membership": RAW_MEMBERSHIP_COL})
+    fig2, ax2 = plt.subplots(figsize=(12, 7))
+    pivot.plot(kind="bar", stacked=True, ax=ax2)
+    ax2.set_title(f"{title_prefix} - Membership Breakdown by Member Type\nRun Date: {RUN_DATE_STR}")
+    ax2.set_xlabel("Member Type")
+    ax2.set_ylabel("Count")
+    ax2.tick_params(axis="x", rotation=45)
+    ax2.legend(legend_labels, title="Membership", bbox_to_anchor=(1.02, 1), loc="upper left")
+    fig2.tight_layout()
 
-    detected = _detect_report_type(df) if mode == "auto" else mode
-    info = {"detected_mode": detected}
+    return fig1, fig2
 
-    if detected == "transaction":
-        df_clean = _dedup_transaction_frame(df)
-        info.update({
-            "rows_in": len(df),
-            "rows_out": len(df_clean),
-            "unique_ids_in": (df[ID_COL].nunique() if ID_COL in df.columns else None),
-            "unique_ids_out": (df_clean[ID_COL].nunique() if ID_COL in df_clean.columns else None),
-            "dedup_applied": True,
-        })
+
+def build_summary_excel(member_type_totals: pd.DataFrame,
+                        membership_breakdown: pd.DataFrame) -> bytes:
+    """Return a bytes Excel file with two sheets: Member Type Totals, Membership Breakdown."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        member_type_totals.to_excel(writer, index=False, sheet_name="Member Type Totals")
+        membership_breakdown.to_excel(writer, index=False, sheet_name="Membership Breakdown")
+
+        wb = writer.book
+        # Optional header format
+        header_fmt = wb.add_format({"bold": True})
+
+        for sheet_name, df in [
+            ("Member Type Totals", member_type_totals),
+            ("Membership Breakdown", membership_breakdown),
+        ]:
+            ws = writer.sheets[sheet_name]
+            # Bold header row
+            ws.set_row(0, None, header_fmt)
+
+            # Set column widths without re-reading the file
+            for i, col in enumerate(df.columns):
+                # Heuristic: header width vs first 100 values
+                samples = df[col].astype(str).head(100).tolist()
+                max_len = max([len(str(col))] + [len(s) for s in samples])
+                ws.set_column(i, i, min(max_len + 2, 40))  # pad a bit, cap at 40
+
+    buf.seek(0)
+    return buf.read()
+
+
+
+MONTH_RE = re.compile(r"(\d{4})[-_]?(\d{2})")  # prefer YYYY-MM or YYYYMM in filename
+
+
+def infer_month_from_filename(filename: str) -> str:
+    """
+    Tries to find 'YYYY-MM' from the filename. Falls back to today's month.
+    Returns 'YYYY-MM'.
+    """
+    m = MONTH_RE.search(filename)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return datetime.today().strftime("%Y-%m")
+
+
+def aggregate_summaries_to_master(files: List) -> bytes:
+    """
+    Accepts a list of uploaded summary Excel files (with "Member Type Totals" sheet),
+    builds:
+      - Time Series (Member Type): rows = member types, columns = months
+      - MoM Δ
+      - %Δ
+      - Trend charts per member type
+    Returns: master workbook as bytes.
+    """
+    # Load each file's "Member Type Totals"
+    month_to_series: Dict[str, pd.Series] = {}
+    all_member_types = set()
+
+    for f in files:
+        month_key = infer_month_from_filename(f.name)
+        df = pd.read_excel(f, sheet_name="Member Type Totals")
+        if not {"Member Type", "Count"}.issubset(df.columns):
+            raise ValueError(f"{f.name} missing required columns in 'Member Type Totals'.")
+        s = df.set_index("Member Type")["Count"].astype(int)
+        month_to_series[month_key] = s
+        all_member_types |= set(s.index)
+
+    # Build time series table
+    months_sorted = sorted(month_to_series.keys())
+    ts = pd.DataFrame(index=sorted(all_member_types), columns=months_sorted).fillna(0).astype(int)
+    for m, s in month_to_series.items():
+        ts.loc[s.index, m] = s
+
+    # MoM Δ and %Δ
+    mom = ts.diff(axis=1).fillna(0).astype(int)
+    pct = ts.pct_change(axis=1).replace([pd.NA, pd.NaT], 0.0).fillna(0.0) * 100.0
+
+    # Write to Excel with charts using xlsxwriter
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+        ts.to_excel(writer, sheet_name="Time Series (Member Type)")
+        mom.to_excel(writer, sheet_name="MoM Δ")
+        pct.to_excel(writer, sheet_name="%Δ")
+
+        wb = writer.book
+        ws_ts = writer.sheets["Time Series (Member Type)"]
+
+        # Add a trends worksheet with charts
+        ws_charts = wb.add_worksheet("Trend Charts")
+        title_fmt = wb.add_format({"bold": True, "font_size": 14})
+        ws_charts.write(0, 0, f"WAPA – Member Type Trends (Run: {RUN_DATE_STR})", title_fmt)
+
+        # Create a line chart per member type, arranged in a grid
+        # Data range: ts sheet. Row offsets (+1 header), col offsets (+1 index col)
+        start_row = 2
+        charts_per_col = 3
+        chart_width = 9  # columns
+        chart_height = 15  # rows
+
+        for idx, mtype in enumerate(ts.index):
+            chart = wb.add_chart({"type": "line"})
+            # Category labels are the months (header row)
+            chart.add_series({
+                "name": str(mtype),
+                "categories": ["Time Series (Member Type)", 0, 1, 0, len(months_sorted)],
+                "values":     ["Time Series (Member Type)", idx + 1, 1, idx + 1, len(months_sorted)],
+            })
+            chart.set_title({"name": str(mtype)})
+            chart.set_legend({"none": True})
+            chart.set_y_axis({"name": "Count"})
+            chart.set_x_axis({"name": "Month"})
+
+            grid_row = idx % charts_per_col
+            grid_col = idx // charts_per_col
+
+            ws_charts.insert_chart(
+                start_row + grid_row * chart_height,
+                grid_col * chart_width,
+                chart,
+                {"x_scale": 1.1, "y_scale": 1.1}
+            )
+
+        # Autofit columns lightly for the 3 sheets
+        for sheet in ["Time Series (Member Type)", "MoM Δ", "%Δ"]:
+            ws = writer.sheets[sheet]
+            df_sheet = {"Time Series (Member Type)": ts, "MoM Δ": mom, "%Δ": pct}[sheet]
+            for i in range(len(df_sheet.columns) + 1):
+                ws.set_column(i, i, 16)
+
+    out.seek(0)
+    return out.read()
+
+
+# ---------------------------
+# UI
+# ---------------------------
+
+st.set_page_config(page_title="WAPA – Member Summary & Trends", layout="wide")
+
+# --- Header with logo on the left and title on the right ---
+LOGO_PATH = Path(__file__).parent / "logo.png"
+
+left, right = st.columns([1, 8])
+
+with left:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=460)  # adjust as desired
     else:
-        df_clean = df
-        info.update({
-            "rows_in": len(df),
-            "rows_out": len(df_clean),
-            "unique_ids_in": (df[ID_COL].nunique() if ID_COL in df.columns else None),
-            "unique_ids_out": (df_clean[ID_COL].nunique() if ID_COL in df_clean.columns else None),
-            "dedup_applied": False,
-        })
+        st.write("")  # spacer if logo missing
 
-    # Guarantee required columns for summary
-    for needed in (RAW_MEMBER_TYPE_COL, RAW_MEMBERSHIP_COL):
-        if needed not in df_clean.columns:
-            df_clean[needed] = ""
+with right:
+    st.markdown(
+        f"""
+        <div style="padding-top:6px;">
+          <h1 style="margin-bottom:0;">WAPA – Member Type Summary & Trend Builder</h1>
+          <p style="color:#666; margin-top:4px;">Run Date: {RUN_DATE_STR}</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    return df_clean, info
+tab1, tab2 = st.tabs(["1) Generate Monthly Member Summary", "2) Build Master Workbook from Summaries"])
 
-# ============================
-# Comparison helpers
-# ============================
-def compare_member_sets(df_left: pd.DataFrame, df_right: pd.DataFrame):
-    """Return overlap and only-in-one tables by Website ID."""
-    left_ids  = set(df_left[ID_COL].dropna().astype(str)) if ID_COL in df_left.columns else set()
-    right_ids = set(df_right[ID_COL].dropna().astype(str)) if ID_COL in df_right.columns else set()
-
-    in_both   = sorted(left_ids & right_ids)
-    only_left = sorted(left_ids - right_ids)
-    only_right= sorted(right_ids - left_ids)
-
-    return in_both, only_left, only_right
-
-def xlsx_from_frames(frames: dict) -> bytes:
-    """Return an in-memory Excel file from {sheet_name: DataFrame}"""
-    from openpyxl import Workbook
-    from openpyxl.utils.dataframe import dataframe_to_rows
-    wb = Workbook()
-    ws = wb.active
-    ws.title = list(frames.keys())[0]
-    for r in dataframe_to_rows(frames[ws.title], index=False, header=True):
-        ws.append(r)
-    for name, df in list(frames.items())[1:]:
-        ws2 = wb.create_sheet(name)
-        for r in dataframe_to_rows(df, index=False, header=True):
-            ws2.append(r)
-    import tempfile
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-    wb.save(tmp.name)
-    tmp.seek(0)
-    data = tmp.read()
-    tmp.close()
-    return data
-
-# ============================
-# Streamlit App
-# ============================
-st.set_page_config(page_title="Member Analysis", layout="wide")
-st.title("Member Analysis (Report-Agnostic)")
-
-tab1, tab2 = st.tabs(["Create Monthly Summary from Raw Export", "Compare Two Reports"])
-
-# ---------------- Tab 1: Summary ----------------
 with tab1:
-    uploaded = st.file_uploader("Choose CSV export", type=["csv"], key="single")
-    if uploaded is None:
-        st.info("Upload a YM CSV: either 'Today & After' (transaction-level) or 'As-of' (member-level).")
-    else:
+    st.subheader("Upload a fresh raw member export (CSV)")
+    raw_file = st.file_uploader("Choose CSV export", type=["csv"])
+    if raw_file is not None:
         try:
-            df_raw = pd.read_csv(uploaded)
+            df_raw = pd.read_csv(raw_file)
         except UnicodeDecodeError:
-            df_raw = pd.read_csv(uploaded, encoding="latin-1")
+            # Fallback if CSV is UTF-16/Windows-1252, etc.
+            raw_file.seek(0)
+            df_raw = pd.read_csv(raw_file, encoding="latin-1")
 
-        st.caption(f"Raw columns ({len(df_raw.columns)}): {list(df_raw.columns)}")
+        st.write("Preview:", df_raw.head())
 
-        mode = st.radio(
-            "Report type",
-            options=["Auto","Transaction-level","Member-level"],
-            index=0,
-            horizontal=True,
-            key="mode_single"
-        )
-        mode_map = {"Auto":"auto", "Transaction-level":"transaction", "Member-level":"member"}
-        df_clean, info = preprocess_input(df_raw, mode=mode_map[mode])
+        member_type_totals, membership_breakdown = compute_summary_from_raw(df_raw)
 
-        with st.expander("Input detection & dedup summary", expanded=False):
-            st.json(info)
-            st.dataframe(df_clean.head(20))
+        # Show dataframes
+        st.markdown("**Member Type Totals**")
+        st.dataframe(member_type_totals, use_container_width=True)
 
-        member_type_totals, membership_breakdown = compute_summary_from_raw(df_clean)
-
-        st.subheader("Member Type Totals")
-        totals_df = member_type_totals.rename_axis("Member Type").reset_index(name="count")
-        st.dataframe(totals_df, use_container_width=True)
-
-        chart = (
-            alt.Chart(totals_df)
-            .mark_bar()
-            .encode(x=alt.X("Member Type:N", sort=None), y="count:Q", tooltip=["Member Type","count"])
-            .properties(height=300)
-        )
-        st.altair_chart(chart, use_container_width=True)
-
-        st.subheader("Membership Breakdown")
+        st.markdown("**Membership Breakdown**")
         st.dataframe(membership_breakdown, use_container_width=True)
 
-        csv_buf = io.StringIO()
-        df_clean.to_csv(csv_buf, index=False)
+# ---- Export in legacy month-over-month format ----
+# Build 'Member Type Totals' sheet: columns ['index','Member/Non-Member - Member Type']
+legacy_totals = totals_df.copy()
+# Match legacy: first column named 'index' with the member type, second named exactly like YM field, holding counts
+legacy_totals = legacy_totals.rename(columns={'Member Type':'index', 'count':'Member/Non-Member - Member Type'})
+
+# Build 'Membership Breakdown' sheet: columns ['Member/Non-Member - Member Type','Member/Non-Member - Membership','Count']
+legacy_breakdown = membership_breakdown.rename(columns={'count':'Count'})
+
+# Package to Excel in-memory
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+wb = Workbook()
+ws1 = wb.active
+ws1.title = "Member Type Totals"
+for r in dataframe_to_rows(legacy_totals, index=False, header=True):
+    ws1.append(r)
+ws2 = wb.create_sheet("Membership Breakdown")
+for r in dataframe_to_rows(legacy_breakdown, index=False, header=True):
+    ws2.append(r)
+
+import tempfile
+tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+wb.save(tmp.name)
+tmp.seek(0)
+legacy_bytes = tmp.read()
+tmp.close()
+
+st.download_button("Download Member_Type_Summary.xlsx (legacy format)",
+                   data=legacy_bytes,
+                   file_name="Member_Type_Summary.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+        # Charts
+        fig1, fig2 = make_charts_from_summary(member_type_totals, membership_breakdown, title_prefix="WAPA")
+        st.pyplot(fig1, use_container_width=True)
+        st.pyplot(fig2, use_container_width=True)
+        
+        # Chart download buttons
+        import io
+        buf1 = io.BytesIO()
+        fig1.savefig(buf1, format="png", bbox_inches="tight")
+        buf1.seek(0)
         st.download_button(
-            "Download cleaned member-level CSV",
-            data=csv_buf.getvalue(),
-            file_name="member_level_clean.csv",
-            mime="text/csv"
+            "Download Total Members Chart (PNG)",
+            data=buf1,
+            file_name=f"WAPA_Total_Members_{RUN_DATE_STR}.png",
+            mime="image/png"
+        )
+        
+        buf2 = io.BytesIO()
+        fig2.savefig(buf2, format="png", bbox_inches="tight")
+        buf2.seek(0)
+        st.download_button(
+            "Download Membership Breakdown Chart (PNG)",
+            data=buf2,
+            file_name=f"WAPA_Membership_Breakdown_{RUN_DATE_STR}.png",
+            mime="image/png"
+        )
+        
+        # Download Excel
+        out_bytes = build_summary_excel(member_type_totals, membership_breakdown)
+        out_name = f"Member_Type_Summary_{RUN_DATE_STR}.xlsx"
+        st.download_button(
+            "Download Summary Excel",
+            data=out_bytes,
+            file_name=out_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-# ---------------- Tab 2: Compare ----------------
+
 with tab2:
-    c1, c2 = st.columns(2)
-    with c1:
-        f_left = st.file_uploader("Left report (e.g., Today & After)", type=["csv"], key="left")
-        mode_left = st.radio("Left report type", ["Auto","Transaction-level","Member-level"], index=0, horizontal=True, key="mode_left")
-    with c2:
-        f_right = st.file_uploader("Right report (e.g., As-of)", type=["csv"], key="right")
-        mode_right = st.radio("Right report type", ["Auto","Transaction-level","Member-level"], index=0, horizontal=True, key="mode_right")
-
-    if f_left and f_right:
-        # Read
+    st.subheader("Upload multiple monthly summary Excel files")
+    st.caption("Tip: name files like `Member_Type_Summary_YYYY-MM.xlsx` so months are auto-detected.")
+    multi_files = st.file_uploader(
+        "Choose one or more summary workbooks",
+        type=["xlsx", "xlsm"],
+        accept_multiple_files=True
+    )
+    if multi_files:
         try:
-            df_left_raw = pd.read_csv(f_left)
-        except UnicodeDecodeError:
-            df_left_raw = pd.read_csv(f_left, encoding="latin-1")
-        try:
-            df_right_raw = pd.read_csv(f_right)
-        except UnicodeDecodeError:
-            df_right_raw = pd.read_csv(f_right, encoding="latin-1")
+            master_bytes = aggregate_summaries_to_master(multi_files)
+            master_name = f"WAPA_Member_Type_Master_{RUN_DATE_STR}.xlsx"
+            st.success("Master workbook created.")
+            st.download_button(
+                "Download Master Workbook",
+                data=master_bytes,
+                file_name=master_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
-        # Preprocess each
-        m = {"Auto":"auto","Transaction-level":"transaction","Member-level":"member"}
-        df_left, info_left = preprocess_input(df_left_raw, mode=m[mode_left])
-        df_right, info_right = preprocess_input(df_right_raw, mode=m[mode_right])
+            # Also show a quick line chart for the top 5 member types by last-month size
+            # so you get an immediate visual in the app
+            # Build the same TS to plot quickly:
+            # (Reloading is cheap given small sizes)
+            month_to_series = {}
+            all_types = set()
+            for f in multi_files:
+                mk = infer_month_from_filename(f.name)
+                df = pd.read_excel(f, sheet_name="Member Type Totals")
+                s = df.set_index("Member Type")["Count"].astype(int)
+                month_to_series[mk] = s
+                all_types |= set(s.index)
+            months_sorted = sorted(month_to_series.keys())
+            ts = pd.DataFrame(index=sorted(all_types), columns=months_sorted).fillna(0).astype(int)
+            for m, s in month_to_series.items():
+                ts.loc[s.index, m] = s
 
-        st.markdown("#### Detection & Dedup Summaries")
-        st.columns(2)[0].json(info_left)
-        st.columns(2)[1].json(info_right)
+            if not ts.empty:
+                st.markdown("**Quick trend preview (top 5 by latest month)**")
+                last_m = months_sorted[-1]
+                top5 = ts.sort_values(last_m, ascending=False).head(5)
 
-        # Compare
-        in_both, only_left, only_right = compare_member_sets(df_left, df_right)
+                fig3, ax3 = plt.subplots(figsize=(10, 5))
+                for mtype, row in top5.iterrows():
+                    ax3.plot(months_sorted, row.values, marker="o", label=mtype)
+                ax3.set_title(f"WAPA – Top 5 Member Types Trend (Run: {RUN_DATE_STR})")
+                ax3.set_xlabel("Month")
+                ax3.set_ylabel("Count")
+                ax3.legend(bbox_to_anchor=(1.02, 1), loc="upper left")
+                fig3.tight_layout()
+                st.pyplot(fig3, use_container_width=True)
 
-        df_both = df_left[df_left[ID_COL].astype(str).isin(in_both)].copy()
-        df_only_left = df_left[df_left[ID_COL].astype(str).isin(only_left)].copy()
-        df_only_right = df_right[df_right[ID_COL].astype(str).isin(only_right)].copy()
-
-        st.markdown("### Results")
-        st.write({
-            "Overlap (members in both)": len(in_both),
-            "Only in Left": len(only_left),
-            "Only in Right": len(only_right),
-        })
-
-        st.markdown("#### Overlap (Both)")
-        st.dataframe(df_both[[ID_COL, "Member/Non-Member - First Name", "Member/Non-Member - Last Name",
-                              "Member/Non-Member - Email", RAW_MEMBER_TYPE_COL, EXP_COL, LAST_DUES_COL]].sort_values(ID_COL),
-                     use_container_width=True)
-
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown("#### Only in Left")
-            st.dataframe(df_only_left[[ID_COL, "Member/Non-Member - First Name", "Member/Non-Member - Last Name",
-                                       "Member/Non-Member - Email", RAW_MEMBER_TYPE_COL, EXP_COL, LAST_DUES_COL]].sort_values(ID_COL),
-                         use_container_width=True)
-        with c4:
-            st.markdown("#### Only in Right")
-            st.dataframe(df_only_right[[ID_COL, "Member/Non-Member - First Name", "Member/Non-Member - Last Name",
-                                        "Member/Non-Member - Email", RAW_MEMBER_TYPE_COL, EXP_COL, LAST_DUES_COL]].sort_values(ID_COL),
-                         use_container_width=True)
-
-        # Download Excel package
-        frames = {
-            "Overlap (Both)": df_both,
-            "Only in Left": df_only_left,
-            "Only in Right": df_only_right,
-        }
-        xlsx_bytes = xlsx_from_frames(frames)
-        st.download_button("Download comparison workbook (.xlsx)", data=xlsx_bytes,
-                           file_name="Report_Comparison.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    else:
-        st.info("Upload two files to run the comparison.")
+        except Exception as e:
+            st.error(str(e))
