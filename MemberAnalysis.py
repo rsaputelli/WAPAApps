@@ -326,6 +326,8 @@ with tab2:
     with c2:
         f_right = st.file_uploader("Right report (e.g., This Month)", type=["csv","xlsx","xls"], key="right")
         mode_right = st.radio("Right report type", ["Auto","Transaction-level","Member-level"], index=0, horizontal=True, key="mode_right")
+    chart_style = st.selectbox("Chart style", ["Bars (side-by-side)", "Line (per type)"], index=0, key="chart_style_mom")
+
 
 
     if f_left and f_right:
@@ -387,35 +389,75 @@ with tab2:
 
             import altair as alt
             chart_source = comp_chart_df.melt(id_vars=["Member Type"], var_name="Report", value_name="Count")
-            st.markdown("#### Member Type — Counts")
-            chart1 = (
-                alt.Chart(chart_source)
-                .mark_bar()
-                .encode(
-                    x=alt.X("Member Type:N", sort=None),
-                    y=alt.Y("Count:Q"),
-                    color="Report:N",
-                    column=alt.Column("Report:N", header=alt.Header(title=f"{left_label} vs {right_label}")),
-                    tooltip=["Member Type","Report","Count"]
-                )
-                .properties(height=250)
-            )
-            st.altair_chart(chart1, use_container_width=True)
+            st.markdown("#### Member Type — Charts")
+            
+            # Two columns for charts
+            col1, col2 = st.columns(2)
 
-            # Delta chart
-            comp_chart_df["Delta (Right-Left)"] = comp_chart_df[right_label] - comp_chart_df[left_label]
-            st.markdown("#### Member Type — Change (Right - Left)")
-            chart2 = (
-                alt.Chart(comp_chart_df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("Member Type:N", sort=None),
-                    y=alt.Y("Delta (Right-Left):Q"),
-                    tooltip=["Member Type","Delta (Right-Left)"]
-                )
-                .properties(title=f"Change: {right_label} minus {left_label}", height=250)
-            )
-            st.altair_chart(chart2, use_container_width=True)
+            if chart_style == "Bars (side-by-side)":
+                # Side-by-side bar charts
+                chart_source = comp_chart_df.melt(id_vars=["Member Type"], var_name="Report", value_name="Count")
+                with col1:
+                    st.markdown(f"**Counts: {left_label} vs {right_label}**")
+                    chart1 = (
+                        alt.Chart(chart_source)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Member Type:N", sort=None),
+                            y=alt.Y("Count:Q"),
+                            color="Report:N",
+                            tooltip=["Member Type","Report","Count"]
+                        )
+                        .properties(height=300)
+                    )
+                    st.altair_chart(chart1, use_container_width=True)
+
+                with col2:
+                    st.markdown("**Change (Right - Left)**")
+                    chart2 = (
+                        alt.Chart(comp_chart_df)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Member Type:N", sort=None),
+                            y=alt.Y("Delta (Right-Left):Q"),
+                            tooltip=["Member Type","Delta (Right-Left)"]
+                        )
+                        .properties(title=f"{right_label} − {left_label}", height=300)
+                    )
+                    st.altair_chart(chart2, use_container_width=True)
+            else:
+                # Line charts per type (two points per series)
+                melted = comp_chart_df.melt(id_vars=["Member Type"], value_vars=[left_label, right_label],
+                                            var_name="Report", value_name="Count")
+                with col1:
+                    st.markdown(f"**Counts over months**")
+                    line1 = (
+                        alt.Chart(melted)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("Report:N", sort=[left_label, right_label], title="Report"),
+                            y="Count:Q",
+                            color="Member Type:N",
+                            tooltip=["Member Type","Report","Count"]
+                        )
+                        .properties(height=300)
+                    )
+                    st.altair_chart(line1, use_container_width=True)
+
+                with col2:
+                    st.markdown("**Change by Member Type**")
+                    chart2 = (
+                        alt.Chart(comp_chart_df)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Member Type:N", sort=None),
+                            y=alt.Y("Delta (Right-Left):Q"),
+                            tooltip=["Member Type","Delta (Right-Left)"]
+                        )
+                        .properties(title=f"{right_label} − {left_label}", height=300)
+                    )
+                    st.altair_chart(chart2, use_container_width=True)
+    
 
             st.write({
                 "Overlap (members in both)": len(in_both),
@@ -482,7 +524,7 @@ with tab2:
             # Normalize labels
             chart_df["Report"] = chart_df["Report"].replace({"Left count": left_label, "Right count": right_label})
 
-            st.markdown("#### Member Type — Counts")
+            st.markdown("#### Member Type — Charts")
             chart1 = (
                 alt.Chart(chart_df)
                 .mark_bar()
