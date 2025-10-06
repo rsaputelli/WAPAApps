@@ -375,14 +375,6 @@ with tab2:
                     ).properties(title=f"{right_label} − {left_label}", height=300)
                     st.altair_chart(chart2, use_container_width=True)
 
-            # Download charts as PNG
-            png_counts = make_png_bars_side_by_side(comp, left_label, right_label)
-            png_delta = make_png_bars_delta(comp, left_label, right_label)
-            dl1, dl2 = st.columns(2)
-            with dl1:
-                st.download_button('Download Counts chart (PNG)', data=png_counts, file_name=f'{left_label}_vs_{right_label}_counts.png', mime='image/png')
-            with dl2:
-                st.download_button('Download Delta chart (PNG)', data=png_delta, file_name=f'{right_label}_minus_{left_label}_delta.png', mime='image/png')
             else:
                 melted = comp.melt(id_vars=["Member Type"], value_vars=[left_label, right_label], var_name="Report", value_name="Count")
                 with col1:
@@ -400,6 +392,15 @@ with tab2:
                         tooltip=["Member Type","Delta (Right-Left)"]
                     ).properties(title=f"{right_label} − {left_label}", height=300)
                     st.altair_chart(chart2, use_container_width=True)
+
+            # Download charts as PNG (shown for either style)
+            png_counts = make_png_bars_side_by_side(comp, left_label, right_label)
+            png_delta = make_png_bars_delta(comp, left_label, right_label)
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                st.download_button('Download Counts chart (PNG)', data=png_counts, file_name=f'{left_label}_vs_{right_label}_counts.png', mime='image/png')
+            with dl2:
+                st.download_button('Download Delta chart (PNG)', data=png_delta, file_name=f'{right_label}_minus_{left_label}_delta.png', mime='image/png')
 
             # Excel output with charts
             from openpyxl import Workbook
