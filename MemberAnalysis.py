@@ -386,7 +386,3 @@ with tab2:
 
         except Exception as e:
             st.error(str(e))
-    # add charts to legacy workbook
-    from openpyxl.chart import BarChart, Reference
-    # Chart on Member Type Totals
-
