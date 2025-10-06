@@ -5,6 +5,58 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from io import BytesIO
+
+def _png_bytes_from_current_fig():
+    buf = BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", dpi=160)
+    plt.close()
+    buf.seek(0)
+    return buf.getvalue()
+
+def make_png_bars_side_by_side(df_comp, left_label, right_label):
+    # df_comp has columns: Member Type, left_label, right_label, Delta (Right-Left)
+    cats = list(df_comp["Member Type"])
+    left_vals = list(df_comp[left_label])
+    right_vals = list(df_comp[right_label])
+    x = range(len(cats))
+    width = 0.38
+    plt.figure(figsize=(10,4))
+    plt.bar([i - width/2 for i in x], left_vals, width, label=left_label)
+    plt.bar([i + width/2 for i in x], right_vals, width, label=right_label)
+    plt.xticks(list(x), cats, rotation=45, ha="right")
+    plt.ylabel("Count")
+    plt.title(f"Counts: {left_label} vs {right_label}")
+    plt.legend()
+    return _png_bytes_from_current_fig()
+
+def make_png_bars_delta(df_comp, left_label, right_label):
+    cats = list(df_comp["Member Type"])
+    delta = list(df_comp["Delta (Right-Left)"])
+    x = range(len(cats))
+    plt.figure(figsize=(10,4))
+    plt.bar(list(x), delta)
+    plt.xticks(list(x), cats, rotation=45, ha="right")
+    plt.ylabel("Change")
+    plt.title(f"Change (Right - Left): {right_label} - {left_label}")
+    return _png_bytes_from_current_fig()
+
+def make_png_trend_line(pivot_df):
+    # pivot_df index = Date, columns = Member Type
+    plt.figure(figsize=(10,4))
+    for col in pivot_df.columns:
+        plt.plot(pivot_df.index, pivot_df[col], marker="o", label=str(col))
+    plt.xlabel("Month")
+    plt.ylabel("Count")
+    plt.title("Trend by Member Type")
+    plt.legend(ncol=2, fontsize=8)
+    plt.xticks(rotation=45, ha="right")
+    return _png_bytes_from_current_fig()
+
 # ============================
 # Constants / Column names
 # ============================
@@ -322,6 +374,15 @@ with tab2:
                         tooltip=["Member Type","Delta (Right-Left)"]
                     ).properties(title=f"{right_label} − {left_label}", height=300)
                     st.altair_chart(chart2, use_container_width=True)
+
+            # Download charts as PNG
+            png_counts = make_png_bars_side_by_side(comp, left_label, right_label)
+            png_delta = make_png_bars_delta(comp, left_label, right_label)
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                st.download_button('Download Counts chart (PNG)', data=png_counts, file_name=f'{left_label}_vs_{right_label}_counts.png', mime='image/png')
+            with dl2:
+                st.download_button('Download Delta chart (PNG)', data=png_delta, file_name=f'{right_label}_minus_{left_label}_delta.png', mime='image/png')
             else:
                 melted = comp.melt(id_vars=["Member Type"], value_vars=[left_label, right_label], var_name="Report", value_name="Count")
                 with col1:
@@ -411,6 +472,15 @@ with tab2:
                 ).properties(title=f"{right_label} − {left_label}", height=300)
                 st.altair_chart(chart2, use_container_width=True)
 
+            # Download charts as PNG
+            png_counts = make_png_bars_side_by_side(df_comp.rename(columns={left_label:left_label, right_label:right_label}), left_label, right_label)
+            png_delta = make_png_bars_delta(df_comp, left_label, right_label)
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                st.download_button('Download Counts chart (PNG)', data=png_counts, file_name=f'{left_label}_vs_{right_label}_counts.png', mime='image/png')
+            with dl2:
+                st.download_button('Download Delta chart (PNG)', data=png_delta, file_name=f'{right_label}_minus_{left_label}_delta.png', mime='image/png')
+
             # Excel with charts
             from openpyxl import Workbook
             from openpyxl.utils.dataframe import dataframe_to_rows
@@ -474,6 +544,10 @@ with tab3:
                 .properties(height=400)
             )
             st.altair_chart(line, use_container_width=True)
+
+            # Download Altair-equivalent line chart as PNG
+            png_trend = make_png_trend_line(pivot)
+            st.download_button('Download trend chart (PNG)', data=png_trend, file_name='member_trend.png', mime='image/png')
 
             # Build & download master workbook
             from openpyxl import Workbook
