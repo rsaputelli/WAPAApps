@@ -251,7 +251,7 @@ def xlsx_from_frames(frames: dict) -> bytes:
 st.set_page_config(page_title="Member Analysis", layout="wide")
 st.title("Member Analysis (Report-Agnostic)")
 
-tab1, tab2 = st.tabs(["Generate Monthly Member Summary", "Analyze Month-Over-Month Changes"])
+tab1, tab2, tab3 = st.tabs(["Generate Monthly Member Summary", "Analyze Month-Over-Month Changes", "Build Master Workbook from Summaries"])
 
 # ---------------- Tab 1: Summary ----------------
 with tab1:
@@ -386,6 +386,7 @@ with tab2:
                 on="Member Type",
                 how="outer"
             ).fillna(0)
+            comp_chart_df["Delta (Right-Left)"] = comp_chart_df[right_label] - comp_chart_df[left_label]
 
             import altair as alt
             chart_source = comp_chart_df.melt(id_vars=["Member Type"], var_name="Report", value_name="Count")
@@ -404,7 +405,8 @@ with tab2:
                         .mark_bar()
                         .encode(
                             x=alt.X("Member Type:N", sort=None),
-                            y=alt.Y("Count:Q"),
+                            xOffset=alt.XOffset('Report:N'),
+                            y=alt.Y("Count:Q", stack=None),
                             color="Report:N",
                             tooltip=["Member Type","Report","Count"]
                         )
@@ -530,7 +532,8 @@ with tab2:
                 .mark_bar()
                 .encode(
                     x=alt.X("Member Type:N", sort=None),
-                    y=alt.Y("Count:Q"),
+                    xOffset=alt.XOffset('Report:N'),
+                    y=alt.Y("Count:Q", stack=None),
                     color="Report:N",
                     tooltip=["Member Type","Report","Count"]
                 )
@@ -571,3 +574,70 @@ with tab2:
             )
     else:
         st.info("Upload two files to run the comparison.")
+
+
+# ---------------- Tab 3: Build Master Workbook from Summaries ----------------
+with tab3:
+    st.info("Upload one or more monthly summary workbooks (Member_Type_Summary.xlsx format). We'll build a running trend (line only).")
+    files = st.file_uploader("Upload monthly summary workbooks", type=["xlsx","xlsm","xls"], accept_multiple_files=True, key="multi_summaries")
+    if files:
+        rows = []
+        for f in files:
+            label = _extract_date_label(f, getattr(f, "name", "Unknown"))
+            try:
+                xls = pd.ExcelFile(f)
+                if "Member Type Totals" not in xls.sheet_names:
+                    st.error(f"{getattr(f,'name','file')}: missing required sheet 'Member Type Totals'.")
+                    continue
+                df_tot = pd.read_excel(xls, sheet_name="Member Type Totals")
+            except Exception as e:
+                st.error(f"Failed to read {getattr(f,'name','file')}: {e}")
+                continue
+            cols = set(df_tot.columns)
+            if "index" in cols and "Member/Non-Member - Member Type" in cols:
+                df_t = df_tot.rename(columns={"index":"Member Type", "Member/Non-Member - Member Type":"count"})[["Member Type","count"]].copy()
+            elif "Member Type" in cols and "count" in cols:
+                df_t = df_tot[["Member Type","count"]].copy()
+            else:
+                st.error(f"{getattr(f,'name','file')}: missing required columns in 'Member Type Totals'.")
+                continue
+            df_t["Date"] = label
+            rows.append(df_t)
+
+        if rows:
+            df_all = pd.concat(rows, ignore_index=True)
+            pivot = df_all.pivot_table(index="Date", columns="Member Type", values="count", aggfunc="sum").fillna(0).sort_index()
+
+            st.subheader("Trend by Member Type (Line)")
+            df_line = pivot.reset_index().melt(id_vars=["Date"], var_name="Member Type", value_name="Count")
+            line = (
+                alt.Chart(df_line)
+                .mark_line(point=True)
+                .encode(x="Date:N", y="Count:Q", color="Member Type:N", tooltip=["Date","Member Type","Count"])
+                .properties(height=400)
+            )
+            st.altair_chart(line, use_container_width=True)
+
+            # Build & download master workbook
+            from openpyxl import Workbook
+            from openpyxl.utils.dataframe import dataframe_to_rows
+            from openpyxl.chart import LineChart, Reference
+            wb = Workbook()
+            ws = wb.active; ws.title = "Monthly Totals"
+            ws.append(["Date"] + list(pivot.columns))
+            for idx, row in pivot.iterrows():
+                ws.append([idx] + list(map(int, row.values)))
+            chart = LineChart(); chart.title = "Trend by Member Type"
+            data_ref = Reference(ws, min_col=2, min_row=1, max_col=1+len(pivot.columns), max_row=ws.max_row)
+            cats_ref = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+            chart.add_data(data_ref, titles_from_data=True); chart.set_categories(cats_ref)
+            ws.add_chart(chart, "B{}".format(2+len(pivot.columns)))
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+            wb.save(tmp.name); tmp.seek(0); xlsx_bytes = tmp.read(); tmp.close()
+            prefix = _date_prefix_today()
+            st.download_button("Download Master Trend Workbook (.xlsx)", data=xlsx_bytes,
+                               file_name=f"{prefix}_Member_Trends.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else:
+        st.info("Drop in your monthly summary workbooks to build the trend.")
