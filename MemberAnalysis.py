@@ -489,9 +489,7 @@ with tab3:
             cats_ref = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
             chart.add_data(data_ref, titles_from_data=True); chart.set_categories(cats_ref)
             chart.y_axis.title = "Count"; chart.x_axis.title = "Month"
-            from openpyxl.chart.label import DataLabelList
-            for s in chart.series:
-                s.dLbls = DataLabelList(); s.dLbls.showVal = True
+            # Data labels removed for readability
             ws.add_chart(chart, "B{}".format(2+len(pivot.columns)))
             import tempfile
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
