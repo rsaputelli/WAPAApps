@@ -1246,12 +1246,10 @@ with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
             "Out-of-Period Refunds (Review)"
         )
 
+# --- End of Excel writing block ---
 st.success("Reconciliation complete.")
 st.dataframe(balance_df)
-
-
-    st.success("Reconciliation complete.")
-    st.dataframe(balance_df)        
+       
         # Write sheets
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
