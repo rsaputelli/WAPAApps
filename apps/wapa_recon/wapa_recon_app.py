@@ -217,6 +217,7 @@ lead_bleed_days  = st.number_input("Include days BEFORE month start (front bleed
 trail_bleed_days = st.number_input("Include days AFTER month end (back bleed)",   min_value=0, max_value=31, value=0, step=1)
 
 run_btn = st.button("Run Reconciliation", key="run_recon_btn")
+did_run = False
 
 if run_btn:
     # ---- safety defaults (prevent NameError in preview blocks)
@@ -1314,15 +1315,16 @@ with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
         )
 
 # --- End of Excel writing block (flush left below) ---
-st.success("Reconciliation complete.")
-st.dataframe(balance_df)
+if did_run:
+    st.success("Reconciliation complete.")
+    st.dataframe(balance_df)
 
-st.download_button(
-    label="Download Excel Workbook",
-    data=out_buf.getvalue(),
-    file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    key="download_xlsx"
+    st.download_button(
+        label="Download Excel Workbook",
+        data=out_buf.getvalue(),
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_xlsx"
 )
 
 with st.expander("Preview: JE Lines (first 200 rows)"):
