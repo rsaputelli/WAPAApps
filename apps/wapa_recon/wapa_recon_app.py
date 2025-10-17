@@ -1117,27 +1117,31 @@ if run_btn:
         refunds_df = pd.DataFrame()
 
     # ---------- NEW TAB 2: Consolidated JE (single multi-line entry by account)
-    if not "je_out" in locals():
+    if "je_out" not in locals():
         je_out = pd.DataFrame(columns=["account","Debit","Credit"])
 
     if not je_out.empty:
         _dr = je_out[["account","Debit"]].dropna(subset=["Debit"]).copy()
         _cr = je_out[["account","Credit"]].dropna(subset=["Credit"]).copy()
 
-        totals = (
-            _dr.groupby("account", as_index=True)["Debit"].sum().to_frame()
-              .merge(_cr.groupby("account", as_index=True)["Credit"].sum(), how="outer")
-              .fillna(0.0)
-              .reset_index()
-        )
-        # Clean / drop zero rows
-        totals["Debit"]  = totals["Debit"].astype(float).round(2)
-        totals["Credit"] = totals["Credit"].astype(float).round(2)
-        consolidated_je = totals.loc[~((totals["Debit"] == 0) & (totals["Credit"] == 0))].copy()
-        # Optional memo column for downstream export
-        consolidated_je["Memo"] = "Consolidated JE — combine with Bank & Fees as one entry"
+        # Make sure numeric to avoid dtype surprises
+        _dr["Debit"]  = pd.to_numeric(_dr["Debit"], errors="coerce")
+        _cr["Credit"] = pd.to_numeric(_cr["Credit"], errors="coerce")
+
+        # Group as regular columns, then merge on 'account'
+        dr_tot = _dr.groupby("account", as_index=False)["Debit"].sum()
+        cr_tot = _cr.groupby("account", as_index=False)["Credit"].sum()
+
+        consolidated_je = dr_tot.merge(cr_tot, on="account", how="outer").fillna(0.0)
+
+        consolidated_je["Debit"]  = consolidated_je["Debit"].astype(float).round(2)
+        consolidated_je["Credit"] = consolidated_je["Credit"].astype(float).round(2)
+        # Drop all-zero rows
+        consolidated_je = consolidated_je.loc[~((consolidated_je["Debit"] == 0) & (consolidated_je["Credit"] == 0))].copy()
+        consolidated_je["Memo"] = "Consolidated JE — single multi-line entry"
     else:
         consolidated_je = pd.DataFrame(columns=["account","Debit","Credit","Memo"])
+
 
     # Deposit Summary output (now includes Bank Deposit Date)
     dep_out = deposit_summary.reset_index().rename(columns={"_dep_gid": "deposit_gid"})[[
@@ -1194,15 +1198,20 @@ if "je_out" not in locals():
     je_out = pd.DataFrame(columns=["deposit_gid","date","account","description","Debit","Credit","source"])
 
 if "consolidated_je" not in locals():
+    if "je_out" not in locals():
+        je_out = pd.DataFrame(columns=["account","Debit","Credit"])
+
     if not je_out.empty:
         _dr = je_out[["account","Debit"]].dropna(subset=["Debit"]).copy()
         _cr = je_out[["account","Credit"]].dropna(subset=["Credit"]).copy()
-        consolidated_je = (
-            _dr.groupby("account", as_index=True)["Debit"].sum().to_frame()
-              .merge(_cr.groupby("account", as_index=True)["Credit"].sum(), how="outer")
-              .fillna(0.0)
-              .reset_index()
-        )
+
+        _dr["Debit"]  = pd.to_numeric(_dr["Debit"], errors="coerce")
+        _cr["Credit"] = pd.to_numeric(_cr["Credit"], errors="coerce")
+
+        dr_tot = _dr.groupby("account", as_index=False)["Debit"].sum()
+        cr_tot = _cr.groupby("account", as_index=False)["Credit"].sum()
+
+        consolidated_je = dr_tot.merge(cr_tot, on="account", how="outer").fillna(0.0)
         consolidated_je["Debit"]  = consolidated_je["Debit"].astype(float).round(2)
         consolidated_je["Credit"] = consolidated_je["Credit"].astype(float).round(2)
         consolidated_je = consolidated_je.loc[~((consolidated_je["Debit"] == 0) & (consolidated_je["Credit"] == 0))].copy()
