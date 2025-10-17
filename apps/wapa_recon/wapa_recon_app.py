@@ -497,13 +497,19 @@ if run_btn:
 
     # 1) DR Bank per deposit
     for _, row in deposit_summary.reset_index().rename(columns={"_dep_gid":"deposit_gid"}).iterrows():
+        if not bool(row.get("_wd_in_selected_month", False)):
+            continue
+
         dep_gid = int(row["deposit_gid"])
+
         # Prefer bank post date if available
         dep_date = (
             row["_wd_bank_post_date"]
             if "_wd_bank_post_date" in row and pd.notna(row["_wd_bank_post_date"])
             else row["deposit_date"]
-)        wd_net = float(row.get("withdrawal_net", 0) or 0)
+        )
+
+        wd_net = float(row.get("withdrawal_net", 0) or 0)
         if wd_net != 0:
             je_rows.append({
                 "deposit_gid": dep_gid,
@@ -514,6 +520,7 @@ if run_btn:
                 "amount": round(wd_net, 2),
                 "source": "Withdrawal",
             })
+
 
     # 2) DR Fees by account per deposit (positive)
     if (
