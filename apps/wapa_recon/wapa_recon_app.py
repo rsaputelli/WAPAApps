@@ -583,8 +583,8 @@ if run_btn:
     deposit_summary = deposit_summary.loc[deposit_summary["_wd_in_selected_month"]].copy()
 
     # Recompute helpers
-    deposit_summary["calc_net"] = deposit_summary["tx_gross_sum"].fillna(0) - deposit_summary["tx_fee_sum"].fillna(0)
-    deposit_summary["variance_vs_withdrawal"] = deposit_summary["withdrawal_net"].fillna(0) - deposit_summary["calc_net"]
+    deposit_summary["calc_net"] = deposit_summary["tx_gross_sum"].fillna(0) + deposit_summary["tx_fee_sum"].fillna(0)
+    deposit_summary["variance_vs_withdrawal"] = deposit_summary["calc_net"] - deposit_summary["withdrawal_net"].fillna(0)
 
     # --- Refresh PP flags/masks & rebuild joins AFTER bank mapping ---
     wd_flag_map = withdrawals.set_index("_dep_gid")["_wd_in_selected_month"].to_dict()
