@@ -454,7 +454,7 @@ if run_btn:
             (~pp["_is_withdrawal"]) &
             (pp["_dep_gid"].notna()) &
             (pp[pp_fee_col].notna()) &
-            (pp["_child_in_window"]
+            (pp["_child_in_window"])
         ].copy()
 
         fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
