@@ -216,8 +216,14 @@ recon_anchor = st.date_input(
 lead_bleed_days  = st.number_input("Include days BEFORE month start (front bleed)", min_value=0, max_value=31, value=0, step=1)
 trail_bleed_days = st.number_input("Include days AFTER month end (back bleed)",   min_value=0, max_value=31, value=0, step=1)
 
+# ---- Persist run status and latest workbook bytes across reruns ----
+if "did_run" not in st.session_state:
+    st.session_state.did_run = False
+if "xlsx_bytes" not in st.session_state:
+    st.session_state.xlsx_bytes = None
+
+# ---- Run button ----
 run_btn = st.button("Run Reconciliation", key="run_recon_btn")
-did_run = False
 
 if run_btn:
     # ---- safety defaults (prevent NameError in preview blocks)
@@ -1315,23 +1321,24 @@ with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
         )
 
 # --- End of Excel writing block (flush left below) ---
-if did_run:
+if st.session_state.did_run and st.session_state.xlsx_bytes:
     st.success("Reconciliation complete.")
     st.dataframe(balance_df)
 
     st.download_button(
         label="Download Excel Workbook",
-        data=out_buf.getvalue(),
+        data=st.session_state.xlsx_bytes,
         file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_xlsx"
+    )
+
+    with st.expander("Preview: JE Lines (first 200 rows)"):
+        st.dataframe(je_out.head(200))
+
+    if not deferral_df.empty:
+        with st.expander("Preview: Deferral Schedule (first 200 rows)"):
+            st.dataframe(deferral_df.head(200))
 )
-
-with st.expander("Preview: JE Lines (first 200 rows)"):
-    st.dataframe(je_out.head(200))
-
-if not deferral_df.empty:
-    with st.expander("Preview: Deferral Schedule (first 200 rows)"):
-        st.dataframe(deferral_df.head(200))
 
 
