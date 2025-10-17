@@ -331,7 +331,7 @@ if run_btn:
         pp.loc[(pp["_dep_gid"].notna()) & (~pp["_is_withdrawal"])]
         .groupby("_dep_gid")
         .agg(
-            tx_count=("net", "size" if pp_net_col else "size"),
+            tx_count=(pp_net_col, "size"),
             tx_gross_sum=(pp_gross_col, "sum"),
             tx_fee_sum=(pp_fee_col, "sum"),
             tx_net_sum=(pp_net_col, "sum"),
@@ -443,6 +443,42 @@ if run_btn:
     # Recompute helpers
     deposit_summary["calc_net"] = deposit_summary["tx_gross_sum"].fillna(0) - deposit_summary["tx_fee_sum"].fillna(0)
     deposit_summary["variance_vs_withdrawal"] = deposit_summary["withdrawal_net"].fillna(0) - deposit_summary["calc_net"]
+    # --- Refresh PP flags/masks & rebuild joins AFTER bank mapping ---
+
+    # 1) Map the bank-anchored month flag from withdrawals back onto all PP rows by deposit_gid
+    wd_flag_map = withdrawals.set_index("_dep_gid")["_wd_in_selected_month"].to_dict()
+    pp["_wd_in_selected_month"] = pp["_dep_gid"].map(wd_flag_map)
+
+    # 2) Recompute the child-in-window mask with the refreshed wd-month flag
+    pp["_child_in_window"] = (
+        (~pp["_is_withdrawal"]) &
+        (pp["_dep_gid"].notna()) &
+        (pp["_wd_in_selected_month"]) &
+        (pd.to_datetime(pp["_parsed_date"], errors="coerce").between(window_start, window_end))
+    )
+
+    # 3) Rebuild transactions subset and the PP↔YM join using the updated mask
+    transactions = pp.loc[pp["_child_in_window"]].copy()
+    transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
+    ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
+
+    join_cols = [c for c in [
+        ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col,
+        "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col, ym_alloc_item_desc_col
+    ] if c]
+
+    ppym = transactions.merge(
+        ym[join_cols],
+        left_on="_pp_txn_key",
+        right_on="_ym_ref_key",
+        how="left",
+        suffixes=("", "_ym"),
+    )
+
+    # 4) Recompute matched_txns with the refreshed transactions
+    pp_keys = set(transactions["_pp_txn_key"].dropna().astype(str))
+    ym_keys = set(ym["_ym_ref_key"].dropna().astype(str))
+    matched_txns = pp_keys & ym_keys
       
 
     # --- Build Deferral Schedule
