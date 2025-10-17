@@ -348,37 +348,49 @@ if run_btn:
     )
     # --- Map PayPal withdrawals to Bank deposits to anchor month by bank posting date ---
 
-    # 1) Identify bank columns and normalize amount
-    bank_date_col   = find_col(bank, ["date", "posting_date", "transaction_date"])
-    bank_desc_col   = find_col(bank, ["description", "memo", "details"])
-    bank_credit_col = find_col(bank, ["deposit", "credit", "amount"])
-    if bank_credit_col and bank[bank_credit_col].dtype == object:
-        bank[bank_credit_col] = to_float(bank[bank_credit_col])
+
+    # 1) Bank columns (explicitly prioritize A:Date and G:Credit)
+    bank_date_col   = find_col(bank, ["date"])   # 'Date'
+    bank_credit_col = find_col(bank, ["credit"]) # 'Credit'
+    bank_deposit_col = find_col(bank, ["deposit"])  # optional secondary
+    bank_amount_col  = find_col(bank, ["amount"])   # optional tertiary
+
+    # Normalize amounts (strip $, commas)
+    for c in [bank_credit_col, bank_deposit_col, bank_amount_col]:
+        if c and bank[c].dtype == object:
+            bank[c] = to_float(bank[c])
+
+    # Parse bank dates
     bank["_bank_date"] = pd.to_datetime(bank[bank_date_col], errors="coerce") if bank_date_col else pd.NaT
 
-    # 2) Keep bank rows in the selected RECON WINDOW (front/back bleed included)
+    # 2) Coalesce to a single positive deposit amount: Credit -> Deposit -> Amount(abs)
+    bank["_bank_amt"] = np.nan
+    if bank_credit_col:
+        bank["_bank_amt"] = bank[bank_credit_col].where(bank[bank_credit_col] > 0)
+    if bank["_bank_amt"].isna().all() and bank_deposit_col:
+        bank["_bank_amt"] = bank[bank_deposit_col].where(bank[bank_deposit_col] > 0)
+    if bank["_bank_amt"].isna().all() and bank_amount_col:
+        bank["_bank_amt"] = bank[bank_amount_col].abs()
+
+    # 3) Keep bank rows in the recon window (front/back bleed applied)
     bank_in_window = bank.loc[
         bank["_bank_date"].between(window_start, window_end, inclusive="both")
     ].copy()
 
-    # 3) Build a quick lookup of bank deposits by rounded amount -> list of (date, idx)
-    #    (round to 2 decimals to match WD net; ignore non-positive/NaN)
-    bank_in_window["_amt2"] = bank_in_window[bank_credit_col].round(2) if bank_credit_col else np.nan
+    # 4) Build quick lookup: amount (rounded) -> [(bank_date, row_idx)]
+    bank_in_window["_amt2"] = bank_in_window["_bank_amt"].round(2)
     bank_match_index = {}
-    if bank_credit_col:
-        for i, r in bank_in_window.dropna(subset=["_amt2"]).iterrows():
-            a = float(r["_amt2"])
-            if a <= 0:
-                continue
-            bank_match_index.setdefault(a, []).append((r["_bank_date"], i))
+    for i, r in bank_in_window.dropna(subset=["_amt2"]).iterrows():
+        a = float(r["_amt2"])
+        if a <= 0:
+            continue
+        bank_match_index.setdefault(a, []).append((r["_bank_date"], i))
 
-    # 4) For each PayPal withdrawal, try to find a bank posting with the SAME amount
-    #    within a small posting window (e.g., ±3 days). If found, use that bank date
-    #    to decide whether this WD is "in the selected month."
+    # 5) Match each PP withdrawal to bank by equal net (± posting lag)
     withdrawals = withdrawals.copy()
     withdrawals["_wd_bank_post_date"] = pd.NaT
 
-    POST_DAYS_TOL = 3  # days between PP withdrawal and bank post allowed
+    POST_DAYS_TOL = 4  # allow up to 4 days lag (8/31 -> 9/2 etc.)
     for i, r in withdrawals.iterrows():
         wd_gid = r["_dep_gid"]
         wd_amt = float(r.get(pp_net_col, 0) or 0)
@@ -387,7 +399,6 @@ if run_btn:
         key = round(wd_amt, 2)
         if key in bank_match_index:
             wd_dt = pd.to_datetime(r.get(pp_date_col), errors="coerce")
-            # choose the closest bank date by absolute delta (<= POST_DAYS_TOL)
             candidates = []
             for bdt, _idx in bank_match_index[key]:
                 if pd.isna(wd_dt) or pd.isna(bdt):
@@ -399,24 +410,40 @@ if run_btn:
                 candidates.sort(key=lambda x: x[0])
                 withdrawals.loc[i, "_wd_bank_post_date"] = candidates[0][1]
 
-    # 5) Month flag: TRUE if **either** the PP withdrawal date is in the selected month
-    #    OR the matched bank posting date is in the selected month.
+    # 6) Month flag: in selected month if PP WD date OR bank post date is in month
     wd_flags = []
-    for i, r in withdrawals.iterrows():
+    for _, r in withdrawals.iterrows():
         wd_dt  = pd.to_datetime(r.get(pp_date_col), errors="coerce")
         bnk_dt = pd.to_datetime(r.get("_wd_bank_post_date"), errors="coerce")
-        in_month_by_pp   = (pd.notna(wd_dt)  and (wd_dt >= recon_start) and (wd_dt <= recon_end))
+        in_month_by_pp   = (pd.notna(wd_dt)  and (wd_dt  >= recon_start) and (wd_dt  <= recon_end))
         in_month_by_bank = (pd.notna(bnk_dt) and (bnk_dt >= recon_start) and (bnk_dt <= recon_end))
         wd_flags.append(in_month_by_pp or in_month_by_bank)
     withdrawals["_wd_in_selected_month"] = wd_flags
 
-    # 6) Carry the bank-post date + flag into wd table (used by deposit_summary and JE)
-    wd["_wd_bank_post_date"] = withdrawals.set_index("_dep_gid")["_wd_bank_post_date"]
+    # 7) Carry flags into wd table (so deposit_summary sees them)
+    wd["_wd_bank_post_date"]    = withdrawals.set_index("_dep_gid")["_wd_bank_post_date"]
     wd["_wd_in_selected_month"] = withdrawals.set_index("_dep_gid")["_wd_in_selected_month"]
 
+    # (optional) Debug
+    with st.expander("Debug: Bank window & WD mapping"):
+        cols_bank = [c for c in [bank_date_col, bank_credit_col, bank_deposit_col, bank_amount_col, "_bank_amt"] if c]
+        st.write("Bank rows in window (first 20):")
+        st.dataframe(bank_in_window[cols_bank].head(20))
+        dbg_cols = ["_dep_gid", pp_date_col, pp_net_col, "_wd_bank_post_date", "_wd_in_selected_month"]
+        dbg_cols = [c for c in dbg_cols if c in withdrawals.columns]
+        st.write("PP withdrawals mapping (first 20):")
+        st.dataframe(withdrawals.sort_values(pp_date_col).head(20)[dbg_cols])
+        
+    # --- Rebuild deposit summary now that bank post flags are on `wd`
     deposit_summary = wd.join(tx_sums, how="left")
+
+    # Keep only withdrawals that belong in the selected month
+    deposit_summary = deposit_summary.loc[deposit_summary["_wd_in_selected_month"]].copy()
+
+    # Recompute helpers
     deposit_summary["calc_net"] = deposit_summary["tx_gross_sum"].fillna(0) - deposit_summary["tx_fee_sum"].fillna(0)
     deposit_summary["variance_vs_withdrawal"] = deposit_summary["withdrawal_net"].fillna(0) - deposit_summary["calc_net"]
+      
 
     # --- Build Deferral Schedule
     deferral_rows = []
@@ -498,7 +525,7 @@ if run_btn:
     # 1) DR Bank per deposit
     for _, row in deposit_summary.reset_index().rename(columns={"_dep_gid":"deposit_gid"}).iterrows():
         if not bool(row.get("_wd_in_selected_month", False)):
-            continue
+            continue  # skip withdrawals outside selected month
 
         dep_gid = int(row["deposit_gid"])
 
@@ -520,7 +547,6 @@ if run_btn:
                 "amount": round(wd_net, 2),
                 "source": "Withdrawal",
             })
-
 
     # 2) DR Fees by account per deposit (positive)
     if (
