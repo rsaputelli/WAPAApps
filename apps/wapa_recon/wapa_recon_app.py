@@ -125,6 +125,21 @@ def find_membership_text_col(df):
     return None
 
 import re as _re_for_gl_pick
+
+def glnum_to_rev_label(num_str: str):
+    """Map a numeric 410x to the full COA label from REV_DUES_BY_TYPE values."""
+    n = str(num_str or "").strip()
+    if not n:
+        return None
+    try:
+        vals = REV_DUES_BY_TYPE.values()
+    except Exception:
+        return None
+    for v in vals:
+        vs = str(v)
+        if vs.strip().startswith(n):
+            return vs
+    return None
 def pick_410_from_gl(gl_code_raw: str):
     s = str(gl_code_raw or "").strip()
     if not s:
@@ -744,11 +759,11 @@ if run_btn:
             key = str(r.get("TransactionID",""))
             def_by_ref[key] = {
                 "recognize": float(r.get("Recognize Current (→ 410x)", 0) or 0),
-                "defer_210": float(r.get("Defer 2026 (→ 210x)", 0) or 0),
-                "defer_212": float(r.get("Defer 2027 (→ 212x)", 0) or 0),
+                "defer_210": float((r.get("Defer 2026 (→ 210x)") if "Defer 2026 (→ 210x)" in r else r.get("Defer 2026 (→ 212x)", 0)) or 0),
+                "defer_212": float((r.get("Defer 2027 (→ 212x)") if "Defer 2027 (→ 212x)" in r else r.get("Defer 2027 (→ 210x)", 0)) or 0),
                 "rev_acct": r.get("Rev Account (410x)") or REV_MEMBERSHIP_DEFAULT,
-                "acct_210": r.get("Defer 2026 Acct (210x)") or DEF_MEMBERSHIP_DEFAULT_NEXT,
-                "acct_212": r.get("Defer 2027 Acct (212x)") or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
+                "acct_210": (r.get("Defer 2026 Acct (210x)") if "Defer 2026 Acct (210x)" in r else r.get("Defer 2026 Acct (212x)")) or DEF_MEMBERSHIP_DEFAULT_NEXT,
+                "acct_212": (r.get("Defer 2027 Acct (212x)") if "Defer 2027 Acct (212x)" in r else r.get("Defer 2027 Acct (210x)")) or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
             }
 
     if not ppym.empty and ym_alloc_col:
