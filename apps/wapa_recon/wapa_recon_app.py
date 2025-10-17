@@ -146,8 +146,13 @@ def is_discount_text(s: str) -> bool:
     return "discount" in str(s or "").lower()
 
 def is_vat_text(s: str) -> bool:
-    d = str(s or "").lower()
-    # cover variations
+    d_raw = str(s or '').strip()
+    d = d_raw.lower()
+    nt = re.sub(r'[^a-z0-9]', '', d)
+    # Primary: exact description equals 'Tax/VAT' with or without spaces/punctuation
+    if d_raw.upper() == 'TAX/VAT' or d == 'tax/vat' or nt == 'taxvat' or nt == 'vattax':
+        return True
+    # Secondary: common variants
     return (
         ("tax" in d) or ("vat" in d) or
         ("cc fee offset" in d) or ("credit card fee offset" in d) or ("processing fee offset" in d)
