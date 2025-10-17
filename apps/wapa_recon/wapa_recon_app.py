@@ -1234,7 +1234,19 @@ if "deferral_df" not in locals():
 
 if "balance_df" not in locals():
     balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
-
+    
+# ---- safety: ensure moneyish() exists before Excel writer ----
+if "moneyish" not in globals():
+    def moneyish(colname: str) -> bool:
+        if not isinstance(colname, str):
+            return False
+        name = colname.lower()
+        hints = [
+            "amount", "debit", "credit", "debits", "credits", "diff",
+            "gross", "fee", "net", "allocation", "recognize", "defer",
+            "sum", "calc", "variance"
+        ]
+        return any(h in name for h in hints)
 out_buf = io.BytesIO()
 
 with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
