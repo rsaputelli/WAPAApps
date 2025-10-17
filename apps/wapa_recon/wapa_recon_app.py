@@ -7,8 +7,9 @@
 # ✔ Membership deferrals using YM Column Z + mid-month rule
 # ✔ 12-mo: current year → 410x; remainder → 210x (2026)
 # ✔ 24-mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
-# ✔ PAC → 2202; VAT → 4314
-# ✔ DISCOUNTS: ignore lines when YM Payment Description says "Discount" (or Item Description contains "discount")
+# ✔ DISCOUNTS ignored via YM Payment Description / Item Description
+# ✔ VAT → 4314
+# ✔ PAC donations → 2202 (robust detection + PAC Detail tab)
 
 import io
 import re
@@ -148,10 +149,15 @@ def is_vat_text(s: str) -> bool:
     d = str(s or "").lower()
     return ("tax" in d) or ("vat" in d)
 
-def is_pac_line(desc: str, gl_code: str) -> bool:
-    d = (desc or "")
-    g = (gl_code or "")
-    return ("pac" in d.lower()) or ("pac" in g.lower()) or ("2202" in g)
+def is_pac_text(s: str) -> bool:
+    s = str(s or "").lower()
+    return ("pac" in s) or ("political action" in s) or ("pac donation" in s) or ("due to wapa pac" in s)
+
+def is_pac_line(item_desc: str, gl_code: str, payment_desc: str) -> bool:
+    g = str(gl_code or "").lower()
+    if "2202" in g:
+        return True
+    return is_pac_text(item_desc) or is_pac_text(payment_desc) or ("pac" in g)
 
 # ------------------------- UI -------------------------
 st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals (12/24 mo) + PAC")
@@ -168,7 +174,8 @@ Upload CSVs (any column order is OK; headers auto-detected):
 - Mid-month rule: payments on or before the 15th count in that month; after the 15th → next month
 - 12-month: current-year months recognized; remainder → **210x (labeled 2026)** by member type
 - 24-month: current-year months recognized; **12 months → 210x (2026)**; remaining months → **212x (2027)**
-- **PAC** credited to 2202; **VAT** credited to 4314; **Discount** rows ignored (via Payment Description).
+- **Discount** rows ignored (via Payment Description / Item Description).
+- **PAC** donations credited to **2202 · Due to WAPA PAC** (detected via GL Code 2202 or text in Item/Payment Description).
 """)
 
 pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
@@ -245,7 +252,7 @@ if run_btn:
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
-    # Build pp↔ym join frame with the columns we need (include Payment Description for discounts)
+    # Build pp↔ym join frame with the columns we need (include Payment Description for discounts + PAC)
     join_cols = [c for c in [ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col, "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col] if c]
     ppym = transactions.merge(
         ym[join_cols],
@@ -289,14 +296,19 @@ if run_btn:
                 continue
 
             item_desc = str(r.get(ym_item_desc_col, "") or "")
-            pay_desc = str(r.get(ym_pay_desc_col, "") or "")
-            mem_str = r.get(ym_membership_col, "")
+            pay_desc  = str(r.get(ym_pay_desc_col, "") or "")
+            gl_code   = str(r.get(ym_gl_code_col, "") or "")
+            mem_str   = r.get(ym_membership_col, "")
 
             # ignore discounts outright
             if is_discount_text(pay_desc) or is_discount_text(item_desc):
                 continue
 
-            # membership dues trigger: membership field present AND item description contains "dues"
+            # exclude PAC rows entirely from deferral schedule
+            if is_pac_line(item_desc, gl_code, pay_desc):
+                continue
+
+            # membership dues trigger: membership present AND item description mentions "dues"
             is_membership_dues = (isinstance(mem_str, str) and mem_str.strip() != "") and ("dues" in item_desc.lower())
             if not is_membership_dues:
                 continue
@@ -305,8 +317,7 @@ if run_btn:
             eff_month = r.get("_eff_month", pd.NaT)
             eff_month = pd.to_datetime(eff_month, errors="coerce")
             months_current = months_left_in_year(eff_month)  # includes eff month
-            term_24 = is_two_year(mem_str)
-            total_months = 24 if term_24 else 12
+            total_months = 24 if is_two_year(mem_str) else 12
 
             # Split months
             cur_mo = min(months_current, total_months)
@@ -343,6 +354,7 @@ if run_btn:
 
     # --- JE Lines (grouped by deposit) ---
     je_rows = []
+    pac_detail_rows = []  # for a PAC detail tab
 
     # 1) DR Bank per deposit
     for _, row in deposit_summary.reset_index().rename(columns={"_dep_gid":"deposit_gid"}).iterrows():
@@ -427,26 +439,37 @@ if run_btn:
             other_rev_by_acct = {}
 
             for _, r in grp.dropna(subset=[ym_alloc_col]).iterrows():
-                alloc = float(r.get(ym_alloc_col, 0) or 0)
+                alloc     = float(r.get(ym_alloc_col, 0) or 0)
                 if alloc == 0:
                     continue
                 item_desc = str(r.get(ym_item_desc_col, "") or "")
-                pay_desc = str(r.get(ym_pay_desc_col, "") or "")
-                gl_code = str(r.get(ym_gl_code_col, "") or "")
-                ref_key = str(r.get("_ym_ref_key",""))
+                pay_desc  = str(r.get(ym_pay_desc_col, "") or "")
+                gl_code   = str(r.get(ym_gl_code_col, "") or "")
+                ref_key   = str(r.get("_ym_ref_key",""))
 
-                # Ignore discounts (either Payment Description says "Discount" or Item Description contains it)
+                # Ignore discounts
                 if is_discount_text(pay_desc) or is_discount_text(item_desc):
                     continue
 
-                if is_pac_line(item_desc, gl_code):
+                # PAC
+                if is_pac_line(item_desc, gl_code, pay_desc):
                     pac_sum += alloc
+                    pac_detail_rows.append({
+                        "deposit_gid": dep_gid,
+                        "TransactionID": ref_key,
+                        "Item Description": item_desc,
+                        "Payment Description": pay_desc,
+                        "GL Code": gl_code,
+                        "Amount": round(alloc, 2),
+                    })
                     continue
 
+                # VAT Offset
                 if is_vat_text(item_desc):
                     vat_sum += alloc
                     continue
 
+                # Membership deferral portions
                 if ref_key in def_by_ref:
                     parts = def_by_ref[ref_key]
                     mem_recognize += parts["recognize"]
@@ -456,6 +479,7 @@ if run_btn:
                     mem_acct_210 = parts["acct_210"]
                     mem_acct_212 = parts["acct_212"]
                 else:
+                    # Other revenue by YM GL code
                     acct = gl_code if gl_code else "UNMAPPED · Review"
                     other_rev_by_acct[acct] = other_rev_by_acct.get(acct, 0.0) + alloc
 
@@ -588,6 +612,9 @@ if run_btn:
     else:
         balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
 
+    # --- PAC detail table (for audit) ---
+    pac_detail_df = pd.DataFrame(pac_detail_rows)
+
     # --- Deposit Summary output ---
     dep_out = deposit_summary.reset_index().rename(columns={"_dep_gid": "deposit_gid"})[[
         "deposit_gid", "deposit_date", "withdrawal_gross", "withdrawal_fee", "withdrawal_net",
@@ -611,6 +638,8 @@ if run_btn:
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
+        if not pac_detail_df.empty:
+            pac_detail_df.to_excel(writer, sheet_name="PAC Detail", index=False)
 
         # Detail tabs for review
         ppym.rename(columns={
@@ -643,3 +672,7 @@ if run_btn:
     if not deferral_df.empty:
         with st.expander("Preview: Deferral Schedule (first 200 rows)"):
             st.dataframe(deferral_df.head(200))
+
+    if not pac_detail_df.empty:
+        with st.expander("PAC Detail (first 200 rows)"):
+            st.dataframe(pac_detail_df.head(200))
