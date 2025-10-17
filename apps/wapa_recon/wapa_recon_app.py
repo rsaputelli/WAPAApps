@@ -285,7 +285,10 @@ if run_btn:
     )
 
     # track YM-matched PP txns for PayPal-only PAC detection
-    matched_txns = set(ppym["_pp_txn_key"].dropna().astype(str).unique())
+    # TRUE matches only: intersection of PP Txn IDs and YM Ref IDs
+    pp_keys = set(transactions["_pp_txn_key"].dropna().astype(str))
+    ym_keys = set(ym["_ym_ref_key"].dropna().astype(str))
+    matched_txns = pp_keys & ym_keys
 
     # --- Aggregations per deposit ---
     tx_sums = (
