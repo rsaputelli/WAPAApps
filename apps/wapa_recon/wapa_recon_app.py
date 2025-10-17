@@ -662,6 +662,68 @@ if run_btn:
         preview_cols = ["_dep_gid", pp_date_col, pp_txn_col, item_title_col, pp_gross_col]
         preview_cols = [c for c in preview_cols if c in pp.columns]
         st.dataframe(pac_only[preview_cols].sort_values(["_dep_gid"]).head(500))
+        
+    # --- PayPal-only INVOICE PAYMENTS (not in YM) → placeholder 99999 credit per deposit ---
+    UNMAPPED_REVIEW_ACCT = "99999 · Needs Coding (Review)"
+    
+    # Reuse pp_txn_key built earlier; exclude PP txns that actually exist in YM
+    # (You already fixed matched_txns to be pp_keys & ym_keys)
+    inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna())
+    if matched_txns:
+        inv_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
+    
+    # Normalize Item Title and extract invoice numbers from patterns like:
+    # "Payment+for+Invoice+No.+300010216", "Payment for Invoice No. 300010216"
+    if item_title_col:
+        pp["_pp_item_title_norm_inv"] = (
+            pp[item_title_col]
+            .astype(str).fillna("")
+            .str.replace(r"[+_]", " ", regex=True)
+            .str.replace(r"[^\w\s\.\#]", " ", regex=True)
+            .str.lower()
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+        )
+    else:
+        pp["_pp_item_title_norm_inv"] = ""
+    
+    # Regex: capture the trailing digits after "payment for invoice no" (allow optional #/.)
+    inv_re = r"payment\s+for\s+invoice\s+no\.?\s*[#/]?\s*(\d{5,})"
+    
+    pp["_pp_invoice_payment_only"] = inv_mask & pp["_pp_item_title_norm_inv"].str.contains(inv_re, regex=True, na=False)
+    inv_only = pp.loc[pp["_pp_invoice_payment_only"]].copy()
+    
+    if not inv_only.empty and (pp_gross_col in inv_only.columns):
+        # Pull invoice number for description
+        inv_only["_invoice_no"] = inv_only["_pp_item_title_norm_inv"].str.extract(inv_re, expand=False)
+    
+        inv_add = (
+            inv_only.groupby("_dep_gid")[pp_gross_col]
+            .sum()
+            .reset_index()
+            .rename(columns={pp_gross_col: "inv_amt"})
+        )
+    
+        for _, r in inv_add.iterrows():
+            amt = float(r["inv_amt"] or 0)
+            if amt == 0:
+                continue
+            je_rows.append({
+                "deposit_gid": int(r["_dep_gid"]),
+                "date": None,
+                "line_type": "CREDIT",
+                "account": UNMAPPED_REVIEW_ACCT,
+                "description": "PayPal Invoice Payment (unmatched) — see detail",
+                "amount": round(amt, 2),
+                "source": "PayPal Invoice Payment (Item Title only)",
+            })
+    
+    # Optional: audit preview
+    with st.expander("PayPal-only Invoice Payments detected (to 99999)"):
+        cols = ["_dep_gid", pp_date_col, pp_txn_col, item_title_col, "_invoice_no", pp_gross_col]
+        cols = [c for c in cols if c in inv_only.columns]
+        if cols:
+            st.dataframe(inv_only[cols].sort_values(["_dep_gid"]).head(500))
 
     je_df = pd.DataFrame(je_rows)
 
