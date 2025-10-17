@@ -692,17 +692,30 @@ if run_btn:
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
 
         # Detail tabs for review
-        ppym.rename(columns={
-            "_pp_txn_key": "TransactionID",
-            ym_item_desc_col: "Item Descriptions",
-            ym_gl_code_col: "GL Codes",
-            ym_alloc_col: "Allocation",
-            ym_vat_col: "Tax/VAT",
-            "_dues_rcpt": "Dues Receipt Date (col Z)",
-            "_eff_month": "Effective Receipt Month",
-            ym_membership_col: "Membership",
-            ym_pay_desc_col: "Payment Description",
-        })[[c for c in ["TransactionID","Item Descriptions","GL Codes","Allocation","Tax/VAT","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"] if c in
+        
+# Build YM Detail export with optional Tax/VAT column included only if present
+_ym_detail = ppym.rename(columns={
+    "_pp_txn_key": "TransactionID",
+    ym_item_desc_col: "Item Descriptions",
+    ym_gl_code_col: "GL Codes",
+    ym_alloc_col: "Allocation",
+    "_dues_rcpt": "Dues Receipt Date (col Z)",
+    "_eff_month": "Effective Receipt Month",
+    ym_membership_col: "Membership",
+    ym_pay_desc_col: "Payment Description",
+})
+# Add a friendly Tax/VAT label if the column exists
+if 'ym_vat_col' in locals() and ym_vat_col and (ym_vat_col in _ym_detail.columns):
+    _ym_detail = _ym_detail.rename(columns={ym_vat_col: "Tax/VAT"})
+# Decide columns dynamically
+_ym_cols = ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid",
+            "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"]
+if "Tax/VAT" in _ym_detail.columns:
+    _ym_cols.insert(4, "Tax/VAT")  # put VAT right after Allocation
+_ym_cols = [c for c in _ym_cols if c in _ym_detail.columns]
+_ym_detail = _ym_detail[_ym_cols].rename(columns={"_dep_gid": "deposit_gid"})
+_ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
+[[c for c in ["TransactionID","Item Descriptions","GL Codes","Allocation","Tax/VAT","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"] if c in
              ["TransactionID","Item Descriptions","GL Codes","Allocation","Tax/VAT","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"]]].rename(columns={"_dep_gid":"deposit_gid"}).to_excel(writer, sheet_name="YM Detail (joined)", index=False)
         if not deferral_df.empty:
             deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
