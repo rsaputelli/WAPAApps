@@ -1167,6 +1167,8 @@ if run_btn:
         label="Download Excel Workbook",
         data=out_buf.getvalue(),
         file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_xlsx"
     )
+
 
