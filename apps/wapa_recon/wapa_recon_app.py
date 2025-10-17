@@ -1560,21 +1560,22 @@ if run_btn:
     st.session_state.did_run = True
 
 
-# Persist dataframes for safe UI rendering across reruns
-try:
-    st.session_state.balance_df = balance_df.copy() if 'balance_df' in locals() else None
-except Exception:
-    st.session_state.balance_df = None
-try:
-    st.session_state.je_out_df = je_out.copy() if 'je_out' in locals() else None
-except Exception:
-    st.session_state.je_out_df = None
-try:
-    st.session_state.deferral_df = deferral_df.copy() if 'deferral_df' in locals() else None
-except Exception:
-    st.session_state.deferral_df = None
 # --- End of Excel writing block (flush left below) ---
 if st.session_state.did_run and st.session_state.xlsx_bytes:
+    # Persist dataframes for safe UI rendering across reruns
+    try:
+        st.session_state.balance_df = balance_df.copy() if 'balance_df' in locals() else None
+    except Exception:
+        st.session_state.balance_df = None
+    try:
+        st.session_state.je_out_df = je_out.copy() if 'je_out' in locals() else None
+    except Exception:
+        st.session_state.je_out_df = None
+    try:
+        st.session_state.deferral_df = deferral_df.copy() if 'deferral_df' in locals() else None
+    except Exception:
+        st.session_state.deferral_df = None
+
     st.success("Reconciliation complete.")
 
     if st.session_state.balance_df is not None:
@@ -1582,7 +1583,30 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
 
     _anchor = pd.to_datetime(recon_anchor)
     run_dt = (_anchor + pd.offsets.MonthEnd(0)).strftime("%Y.%m.%d")
+    st.caption("💡 If Excel opens in Protected View, totals may show $0 until you click **Enable Editing**.")
+    st.download_button(
+        label="Download Excel Workbook",
+        data=st.session_state.xlsx_bytes,
+        file_name=f"{run_dt} WAPA PayPal and YM Recon.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_xlsx"
+    )
 
+    if st.session_state.je_out_df is not None:
+        with st.expander("Preview: JE Lines (first 200 rows)"):
+            st.dataframe(st.session_state.je_out_df.head(200))
+
+    if st.session_state.deferral_df is not None and not st.session_state.deferral_df.empty:
+        with st.expander("Preview: Deferral Schedule (first 200 rows)"):
+            st.dataframe(st.session_state.deferral_df.head(200))
+
+
+    if st.session_state.balance_df is not None:
+        st.dataframe(st.session_state.balance_df)
+
+    _anchor = pd.to_datetime(recon_anchor)
+    run_dt = (_anchor + pd.offsets.MonthEnd(0)).strftime("%Y.%m.%d")
+    st.caption("💡 If Excel opens in Protected View, totals may show $0 until you click **Enable Editing**.")
     st.download_button(
         label="Download Excel Workbook",
         data=st.session_state.xlsx_bytes,
