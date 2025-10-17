@@ -1455,23 +1455,8 @@ if run_btn:
             return any(h in name for h in hints)
     out_buf = io.BytesIO()
 
-    # --- Build dynamic output filename based on selected date ---
-    from datetime import timedelta
-
-    # Compute the last day of the selected month
-    next_month = (recon_anchor.replace(day=28) + timedelta(days=4)).replace(day=1)
-    last_day_of_month = next_month - timedelta(days=1)
-
-    # Use that for the filename
-    date_str = last_day_of_month.strftime("%Y.%m.%d")
-    out_filename = f"{date_str} WAPA PayPal and YM Recon.xlsx"
-
     with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
-        dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
-        balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
-        je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
-        _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
-            
+        
         # ---- NEW first two tabs ----
         if not refunds_df.empty:
             refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
@@ -1481,43 +1466,6 @@ if run_btn:
         # ---- existing tabs ----
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
-        # --- Excel-formula TOTALS for Consolidated JE (Single Entry) and JE Balance Check ---
-        def _col_letter(i):
-            s = ""
-            i += 1
-            while i:
-                i, r = divmod(i-1, 26)
-                s = chr(65 + r) + s
-            return s
-        
-        # Consolidated JE (Single Entry) totals
-        ws_cje = writer.sheets.get("Consolidated JE (Single Entry)")
-        if ws_cje is not None and 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
-            _last_row = len(consolidated_je) + 1  # Excel row index for last data row (1-based)
-            ws_cje.write(_last_row, 0, "TOTAL")
-            for _col_name in ["Debit", "Credit"]:
-                if _col_name in consolidated_je.columns:
-                    _cidx = consolidated_je.columns.get_loc(_col_name)
-                    _colL = _col_letter(_cidx)
-                    ws_cje.write_formula(_last_row, _cidx, "=SUM(" + _colL + "2:" + _colL + str(_last_row) + ")")
-        
-        # JE Balance Check totals
-        ws_bal = writer.sheets.get("JE Balance Check")
-        if ws_bal is not None and 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
-            _last_row_b = len(balance_df) + 1
-            ws_bal.write(_last_row_b, 0, "TOTAL")
-            for _col_name in ["Debits", "Credits"]:
-                if _col_name in balance_df.columns:
-                    _cidx = balance_df.columns.get_loc(_col_name)
-                    _colL = _col_letter(_cidx)
-                    ws_bal.write_formula(_last_row_b, _cidx, "=SUM(" + _colL + "2:" + _colL + str(_last_row_b) + ")")
-            if all(c in balance_df.columns for c in ["Debits", "Credits", "Diff"]):
-                _d_idx = balance_df.columns.get_loc("Debits")
-                _c_idx = balance_df.columns.get_loc("Credits")
-                _diff_idx = balance_df.columns.get_loc("Diff")
-                _dL, _cL = _col_letter(_d_idx), _col_letter(_c_idx)
-                ws_bal.write_formula(_last_row_b, _diff_idx, "=" + _dL + str(_last_row_b+1) + "-" + _cL + str(_last_row_b+1))
-
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
         _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
         if not deferral_df.empty:
@@ -1591,7 +1539,7 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
     st.download_button(
         label="Download Excel Workbook",
         data=st.session_state.xlsx_bytes,
-        file_name=out_filename,
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_xlsx"
     )
