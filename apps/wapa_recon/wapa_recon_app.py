@@ -1510,6 +1510,50 @@ if run_btn:
                 oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}),
                 "Out-of-Period Refunds (Review)"
             )
+        # === Totals rows (Excel formulas) ===
+        def _col_letter(i: int) -> str:
+            s = ""
+            i += 1
+            while i:
+                i, r = divmod(i - 1, 26)
+                s = chr(65 + r) + s
+            return s
+
+        # Consolidated JE (Single Entry) — add TOTAL row for Debit/Credit
+        try:
+            ws = writer.sheets.get("Consolidated JE (Single Entry)")
+            if ws is not None and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
+                last_row = len(consolidated_je) + 1  # header is row 1
+                ws.write(last_row, 0, "TOTAL")
+                for col_name in ["Debit", "Credit"]:
+                    if col_name in consolidated_je.columns:
+                        cidx = consolidated_je.columns.get_loc(col_name)
+                        colL = _col_letter(cidx)
+                        ws.write_formula(last_row, cidx, f"=SUM({colL}2:{colL}{last_row})")
+        except Exception:
+            pass
+
+        # JE Balance Check — add TOTAL row for Debits/Credits and compute Diff
+        try:
+            ws = writer.sheets.get("JE Balance Check")
+            if ws is not None and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
+                last_row = len(balance_df) + 1
+                ws.write(last_row, 0, "TOTAL")
+                for col_name in ["Debits", "Credits"]:
+                    if col_name in balance_df.columns:
+                        cidx = balance_df.columns.get_loc(col_name)
+                        colL = _col_letter(cidx)
+                        ws.write_formula(last_row, cidx, f"=SUM({colL}2:{colL}{last_row})")
+
+                # If Diff column exists, write formula: =Debits - Credits
+                if all(c in balance_df.columns for c in ["Debits", "Credits", "Diff"]):
+                    d_idx = balance_df.columns.get_loc("Debits")
+                    c_idx = balance_df.columns.get_loc("Credits")
+                    diff_idx = balance_df.columns.get_loc("Diff")
+                    dL, cL = _col_letter(d_idx), _col_letter(c_idx)
+                    ws.write_formula(last_row, diff_idx, f"={dL}{last_row+1}-{cL}{last_row+1}")
+        except Exception:
+            pass
 
     # Save workbook bytes and mark run complete (still inside the 'with' block)
     st.session_state.xlsx_bytes = out_buf.getvalue()
@@ -1536,7 +1580,10 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
     if st.session_state.balance_df is not None:
         st.dataframe(st.session_state.balance_df)
 
-    st.download_button(
+    _anchor = pd.to_datetime(recon_anchor)
+    run_dt = (_anchor + pd.offsets.MonthEnd(0)).strftime("%Y.%m.%d")
+
+        st.download_button(
         label="Download Excel Workbook",
         data=st.session_state.xlsx_bytes,
         file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
