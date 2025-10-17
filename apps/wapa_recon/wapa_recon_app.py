@@ -177,6 +177,17 @@ pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
 ym_file = st.file_uploader("YM Export CSV", type=["csv"], key="ym")
 bank_file = st.file_uploader("Bank/TD CSV", type=["csv"], key="bank")
 
+# --- Recon period controls ---
+today = pd.Timestamp.today().normalize()
+default_month_start = pd.Timestamp(year=today.year, month=today.month, day=1)
+
+recon_anchor = st.date_input(
+    "Reconcile month (pick any day IN the month)",
+    value=default_month_start.date()
+)
+lead_bleed_days  = st.number_input("Include days BEFORE month start (front bleed)", min_value=0, max_value=31, value=0, step=1)
+trail_bleed_days = st.number_input("Include days AFTER month end (back bleed)",   min_value=0, max_value=31, value=0, step=1)
+
 run_btn = st.button("Run Reconciliation")
 
 if run_btn:
@@ -264,35 +275,34 @@ if run_btn:
     ym["_dues_rcpt"]  = pd.to_datetime(ym[ym_dues_rcpt_col], errors="coerce") if ym_dues_rcpt_col else pd.NaT
     ym["_eff_month"]  = ym["_dues_rcpt"].apply(effective_receipt_month)
 
-    # --- Derive recon month from PayPal withdrawals (mode month) ---
-    wd_dates = pd.to_datetime(withdrawals[pp_date_col], errors="coerce")
-    wd_months = wd_dates.dt.to_period("M").dropna()
-    if not wd_months.empty:
-        recon_period = wd_months.mode()[0]
-        recon_start = recon_period.to_timestamp(how="start")
-        recon_end   = recon_period.to_timestamp(how="end")
-    else:
-        any_pp_date = pd.to_datetime(pp[pp_date_col], errors="coerce").dt.to_period("M").dropna()
-        if not any_pp_date.empty:
-            recon_period = any_pp_date.mode()[0]
-            recon_start = recon_period.to_timestamp(how="start")
-            recon_end   = recon_period.to_timestamp(how="end")
-        else:
-            recon_start = pd.Timestamp.min
-            recon_end   = pd.Timestamp.max
+    # --- Build recon month & window from controls ---
+    anchor = pd.to_datetime(recon_anchor)
+    recon_start = anchor.replace(day=1).normalize()
+    recon_end   = (recon_start + pd.offsets.MonthEnd(1))
+    window_start = recon_start - pd.Timedelta(days=int(lead_bleed_days))
+    window_end   = recon_end   + pd.Timedelta(days=int(trail_bleed_days))
 
-    # --- Exclude YM rows outside recon month (prevents next-month credits/refunds bleed) ---
+    # --- YM: keep only rows whose Payment Date falls inside the window
     if ym_pay_date_col:
-        ym = ym.loc[ym["_ym_pay_date"].between(recon_start, recon_end)].copy()
+        ym = ym.loc[ym["_ym_pay_date"].between(window_start, window_end)].copy()
 
-    # --- Prepare PayPal transactions subset (same-month as their withdrawal) ---
-    pp["_month"] = pp["_parsed_date"].dt.to_period("M")
-    wd_month = pp.loc[pp["_is_withdrawal"], ["_dep_gid","_month"]].set_index("_dep_gid")["_month"].to_dict()
-    pp["_same_dep_month"] = pp.apply(
-        lambda r: (not r["_is_withdrawal"]) and pd.notna(r["_dep_gid"]) and (r["_month"] == wd_month.get(r["_dep_gid"])),
-        axis=1
+    # --- PayPal: keep only CHILD transactions that:
+    #     (a) belong to a deposit whose WITHDRAWAL DATE is inside the selected month
+    #     (b) have a txn date inside the [window_start, window_end] window
+    pp["_wd_date"] = np.where(pp["_is_withdrawal"], pp[pp_date_col], np.nan)
+    wd_date_map = pd.to_datetime(pp.loc[pp["_is_withdrawal"], [ "_dep_gid", pp_date_col ]].set_index("_dep_gid")[pp_date_col], errors="coerce").to_dict()
+    pp["_wd_date"] = pp["_dep_gid"].map(wd_date_map)
+    pp["_wd_in_selected_month"] = pd.to_datetime(pp["_wd_date"], errors="coerce").between(recon_start, recon_end)
+
+    pp["_child_in_window"] = (
+        (~pp["_is_withdrawal"]) &
+        (pp["_dep_gid"].notna()) &
+        (pp["_wd_in_selected_month"]) &
+        (pd.to_datetime(pp["_parsed_date"], errors="coerce").between(window_start, window_end))
     )
-    transactions = pp.loc[pp["_same_dep_month"]].copy()
+
+    transactions = pp.loc[pp["_child_in_window"]].copy()
+
 
     # --- Link PP transactions to YM by TransactionID ↔ Reference
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
@@ -444,7 +454,7 @@ if run_btn:
             (~pp["_is_withdrawal"]) &
             (pp["_dep_gid"].notna()) &
             (pp[pp_fee_col].notna()) &
-            (pp["_same_dep_month"])
+            (pp["_child_in_window"]
         ].copy()
 
         fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
@@ -609,16 +619,20 @@ if run_btn:
                 })
 
     # 4) PAC donations that appear only in PayPal (not in YM) — normalize Item Title (Col O)
-    # Catches "Online+Donation+(WAPA+PAC)" etc., avoids double-counting.
     item_title_col = pp_item_title_col
     if pp_txn_col and pp_txn_col in pp.columns:
         pp["_pp_txn_key"] = pp[pp_txn_col].astype(str).str.strip()
     else:
         pp["_pp_txn_key"] = ""
 
-    pac_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_same_dep_month"])
+    pac_mask = (
+        (~pp["_is_withdrawal"]) &
+        (pp["_dep_gid"].notna()) &
+        (pp["_child_in_window"])      # <-- changed here
+    )
     if matched_txns:
         pac_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
+
 
     if item_title_col:
         pp["_pp_item_title_norm"] = (
@@ -665,7 +679,7 @@ if run_btn:
         st.dataframe(pac_only[preview_cols].sort_values(["_dep_gid"]).head(500))
 
     # 5) PayPal-only "Payment for Invoice No. ####" → 99999 placeholder
-    inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_same_dep_month"])
+    inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_child_in_window"])
     if matched_txns:
         inv_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
 
@@ -727,8 +741,12 @@ if run_btn:
     pp["_is_refund"] = type_is_refund | amt_is_refund
 
     oop_refunds = pp.loc[
-        (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (~pp["_same_dep_month"]) & (pp["_is_refund"])
+        (~pp["_is_withdrawal"]) &
+        (pp["_dep_gid"].notna()) &
+        (~pp["_child_in_window"]) &   # <-- replaced here
+        (pp["_is_refund"])
     ].copy()
+
 
     je_df = pd.DataFrame(je_rows)
 
