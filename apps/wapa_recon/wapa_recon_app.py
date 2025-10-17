@@ -108,6 +108,70 @@ DUES_VAT_OFFSET_INCOME = "Membership Dues:4108 · Offset of CC Processing Fees"
 UNMAPPED_REVIEW_ACCT   = "99999 · Needs Coding (Review)"
 
 # ------------------------- Helpers -------------------------
+
+
+# --- Added helpers (membership, GL parsing, safety net) ---
+UNKNOWN_MEM_TYPES = set()
+
+def find_membership_text_col(df):
+    preferred = [
+        "Member/Non-Member - Membership",
+        "Membership",
+        "Member/Non-Member - Member Type",
+        "Member Type",
+    ]
+    lower = {c.lower(): c for c in df.columns}
+    for name in preferred:
+        if name.lower() in lower:
+            return lower[name.lower()]
+    for c in df.columns:
+        cl = c.lower()
+        if "membership" in cl and "date" not in cl and "expire" not in cl:
+            return c
+    return None
+
+def classify_member_type(raw_text: str) -> str:
+    """Normalize membership label to canonical keys; collect unknowns."""
+    s = (str(raw_text) or "").strip().lower()
+    if "fellow" in s:           return "fellow"
+    if "organiz" in s:          return "organizational"
+    if "affiliate" in s:        return "affiliate"
+    if "student" in s:          return "student"
+    if "sustain" in s:          return "sustaining"
+    if "hardship" in s:         return "hardship"
+    if s and "member" not in s: UNKNOWN_MEM_TYPES.add(raw_text)
+    return "member"
+
+import re as _re_glpick
+def pick_410_from_gl(gl_code_raw: str):
+    s = str(gl_code_raw or "").strip()
+    if not s:
+        return None
+    tokens = [t for t in _re_glpick.split(r"[\,\|\;/\s]+", s) if t]
+    def lead(tok):
+        m = _re_glpick.match(r"(\d{3,5})", tok)
+        return m.group(1) if m else None
+    nums = [lead(t) for t in tokens if lead(t)]
+    for n in nums:
+        if n.startswith("410"):
+            return n
+    return None
+
+def glnum_to_rev_label(num_str: str, mapping=None):
+    """Map a numeric 410x to a full COA label using REV_DUES_BY_TYPE values if available."""
+    n = str(num_str or "").strip()
+    if not n:
+        return None
+    mp = mapping
+    try:
+        vals = (mp or REV_DUES_BY_TYPE).values()
+    except Exception:
+        return None
+    for v in vals:
+        vs = str(v)
+        if vs.strip().startswith(n):
+            return vs
+    return None
 def norm_text(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
@@ -304,10 +368,15 @@ if run_btn:
     # --- YM columns ---
     ym_ref_col        = find_col(ym, ["invoice_-_reference_number", "invoice_reference_number", "reference_number", "invoice"])
     ym_item_desc_col  = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])   # N (legacy)
-    ym_gl_code_col    = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                # O
+    ym_gl_code_col    = find_col(ym, [
+        "payment_allocation_(year-to-date)_-_item_gl_code",
+        "payment_allocation_-_item_gl_code",
+        "item_gl_code",
+        "gl_codes", "gl_code", "gl", "account", "account_code"
+    ])  # O
     ym_alloc_col      = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])              # Q
     ym_dues_rcpt_col  = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
-    ym_membership_col = find_col(ym, ["membership", "membership_type"])                                       # AD
+    ym_membership_col = find_membership_text_col(ym)  # AD (text)
     ym_pay_desc_col   = find_col(ym, ["payment_description", "payment_descriptions", "payment_desc", "ym_payment_description"])
 
     # Allocation Item Description (for VAT/Refund flagging)
@@ -575,12 +644,12 @@ if run_btn:
                 is_vat_text(alloc_item_desc) or ("4314" in str(gl_code).lower())
             )
             if _vat_gate:
-                # Route VAT by context: dues vs other
                 cat = str(category or "").lower()
-                if cat.startswith("membership") or (str(gl_code).strip().startswith("410")):
+                if cat.startswith("membership") or str(gl_code).strip().startswith("410"):
                     vat_dues_sum += alloc
                 else:
                     vat_other_sum += alloc
+                vat_sum += alloc
                 continue
 
             # Membership gate for DEFERRALS ONLY:
@@ -601,7 +670,7 @@ if run_btn:
             if pd.isna(eff_month):
                 eff_month = pd.NaT
 
-            mt = infer_member_type(mem_str)
+            mt = classify_member_type(mem_str)
             months_current = months_left_in_year(eff_month)
 
             # Determine 24 vs 12 from ANY of: Membership (AD), Allocation Item Desc (N), Item Desc
@@ -634,14 +703,22 @@ if run_btn:
                 "Months Next (2026)": next_mo,
                 "Months Following (2027)": follow_mo,
                 "Recognize Current (→ 410x)": amt_cur,
-                "Defer 2026 (→ 210x)": amt_next,
-                "Defer 2027 (→ 212x)": amt_follow,
-                "Rev Account (410x)": REV_DUES_BY_TYPE.get(mt, REV_MEMBERSHIP_DEFAULT),
-                "Defer 2026 Acct (210x)": DEFER_210_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_NEXT),
-                "Defer 2027 Acct (212x)": DEFER_212_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_FOLLOW),
+                "Defer 2026 (→ 212x)": amt_next,
+                "Defer 2027 (→ 210x)": amt_follow,
+                "Rev Account (410x)": (glnum_to_rev_label(pick_410_from_gl(gl_code)) or REV_DUES_BY_TYPE.get(mt, REV_MEMBERSHIP_DEFAULT)),
+                "Defer 2026 Acct (212x)": DEFER_212_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_NEXT),
+                "Defer 2027 Acct (210x)": DEFER_210_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_FOLLOW), DEF_MEMBERSHIP_DEFAULT_FOLLOW),
             })
 
     deferral_df = pd.DataFrame(deferral_rows)
+
+    # Warn if we encountered unknown membership labels
+    try:
+        import streamlit as st
+        if UNKNOWN_MEM_TYPES:
+            st.warning("Defaulted unknown membership labels to Member: " + ", ".join(sorted({str(x) for x in UNKNOWN_MEM_TYPES})))
+    except Exception:
+        pass
 
     # --- JE Lines (grouped by deposit) ---
     je_rows = []
@@ -714,11 +791,11 @@ if run_btn:
             key = str(r.get("TransactionID",""))
             def_by_ref[key] = {
                 "recognize": float(r.get("Recognize Current (→ 410x)", 0) or 0),
-                "defer_210": float(r.get("Defer 2026 (→ 210x)", 0) or 0),
-                "defer_212": float(r.get("Defer 2027 (→ 212x)", 0) or 0),
+                "defer_210": float((r.get("Defer 2026 (→ 210x)") if "Defer 2026 (→ 210x)" in r else r.get("Defer 2026 (→ 212x)", 0)) or 0),
+                "defer_212": float((r.get("Defer 2027 (→ 212x)") if "Defer 2027 (→ 212x)" in r else r.get("Defer 2027 (→ 210x)", 0)) or 0),
                 "rev_acct": r.get("Rev Account (410x)") or REV_MEMBERSHIP_DEFAULT,
-                "acct_210": r.get("Defer 2026 Acct (210x)") or DEF_MEMBERSHIP_DEFAULT_NEXT,
-                "acct_212": r.get("Defer 2027 Acct (212x)") or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
+                "acct_210": (r.get("Defer 2026 Acct (210x)") if "Defer 2026 Acct (210x)" in r else r.get("Defer 2026 Acct (212x)")) or DEF_MEMBERSHIP_DEFAULT_NEXT,
+                "acct_212": (r.get("Defer 2027 Acct (212x)") if "Defer 2027 Acct (212x)" in r else r.get("Defer 2027 Acct (210x)")) or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
             }
 
     if not ppym.empty and ym_alloc_col:
@@ -728,6 +805,7 @@ if run_btn:
             pac_sum = 0.0
             vat_dues_sum = 0.0
             vat_other_sum = 0.0
+            vat_sum = 0.0
             vat_sum = 0.0
             mem_recognize = 0.0
             mem_defer_210 = 0.0
@@ -801,6 +879,7 @@ if run_btn:
                     "description": "PAC Donations (liability)",
                     "amount": round(pac_sum, 2),
                     "source": "YM Allocations → PAC",
+                })
             if vat_dues_sum != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
@@ -821,8 +900,6 @@ if run_btn:
                     "description": "Tax/VAT / CC Fee Offset",
                     "amount": round(vat_other_sum, 2),
                     "source": "YM Allocations",
-                })
-
                 })
 
             if vat_sum != 0:
