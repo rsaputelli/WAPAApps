@@ -219,6 +219,11 @@ trail_bleed_days = st.number_input("Include days AFTER month end (back bleed)", 
 run_btn = st.button("Run Reconciliation", key="run_recon_btn")
 
 if run_btn:
+    # ---- safety defaults (prevent NameError in preview blocks)
+    je_out = pd.DataFrame(columns=["deposit_gid","date","account","description","Debit","Credit","source"])
+    deferral_df = pd.DataFrame()
+    balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
+
     if not (pp_file and ym_file and bank_file):
         st.error("Please upload all three files.")
         st.stop()
@@ -545,16 +550,15 @@ if run_btn:
 
             # Membership gate for DEFERRALS ONLY:
             # Only allow if Category (M) startswith "membership" OR GL code startswith "410".
-            # (Do NOT pass just because "Membership" text exists somewhere.)
+            # (Do NOT pass just because Membership text exists somewhere.)
             is_membership_dues = False
-            if category.startswith("membership"):
+            if str(category).startswith("membership"):
                 is_membership_dues = True
-            elif gl_code.strip().startswith("410"):
+            elif str(gl_code).strip().startswith("410"):
                 is_membership_dues = True
 
             if not is_membership_dues:
                 continue
-
 
             eff_month = pd.to_datetime(r.get("_eff_month", pd.NaT), errors="coerce")
             if pd.isna(eff_month):
@@ -952,6 +956,57 @@ if run_btn:
             st.dataframe(audit.sort_values(["deposit_gid","side","account"]))
         else:
             st.write("No JE rows to audit.")
+        # 5b) PayPal-only Registration payments → credit default 430x registration income
+        reg_mask = (
+            (~pp["_is_withdrawal"]) &
+            (pp["_dep_gid"].notna()) &
+            (pp["_child_in_window"])
+        )
+        if matched_txns:
+            reg_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
+
+        # Normalize item title for keyword match
+        if item_title_col:
+            pp["_pp_item_title_norm_reg"] = (
+                pp[item_title_col]
+                .astype(str).fillna("")
+                .str.replace(r"[+_]", " ", regex=True)
+                .str.replace(r"[^\w\s]", " ", regex=True)
+                .str.lower()
+                .str.replace(r"\s+", " ", regex=True)
+                .str.strip()
+            )
+        else:
+            pp["_pp_item_title_norm_reg"] = ""
+
+        # Keywords that imply conference registration
+        reg_kw = r"(registration|conference|cme|meeting\s*registration|attendee)"
+
+        pp["_pp_registration_only"] = reg_mask & pp["_pp_item_title_norm_reg"].str.contains(reg_kw, regex=True, na=False)
+        pp_reg_only = pp.loc[pp["_pp_registration_only"]].copy()
+
+        if not pp_reg_only.empty and (pp_gross_col in pp_reg_only.columns):
+            reg_add = (
+                pp_reg_only.groupby("_dep_gid")[pp_gross_col]
+                .sum()
+                .reset_index()
+                .rename(columns={pp_gross_col: "reg_amt"})
+            )
+
+            DEFAULT_REG_ACCOUNT = "4302 · Registration Income"
+            for _, r in reg_add.iterrows():
+                amt = float(r["reg_amt"] or 0)
+                if amt == 0:
+                    continue
+                je_rows.append({
+                    "deposit_gid": int(r["_dep_gid"]),
+                    "date": None,
+                    "line_type": "CREDIT",
+                    "account": DEFAULT_REG_ACCOUNT,
+                    "description": "PayPal Registration (unmatched)",
+                    "amount": round(amt, 2),
+                    "source": "PayPal Item Title (registration keywords)",
+                })
 
     # Collect out-of-period refunds for review (excluded from JE) — PayPal view
     if pp_type_col:
