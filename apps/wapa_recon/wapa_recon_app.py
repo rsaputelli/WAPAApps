@@ -1578,8 +1578,8 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
 
     st.success("Reconciliation complete.")
 
-    if st.session_state.balance_df is not None:
-        st.dataframe(st.session_state.balance_df)
+    # if st.session_state.balance_df is not None:
+        # st.dataframe(st.session_state.balance_df)
 
     # _anchor = pd.to_datetime(recon_anchor)
     # run_dt = (_anchor + pd.offsets.MonthEnd(0)).strftime("%Y.%m.%d")
@@ -1669,7 +1669,7 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
             s = chr(65 + r) + s
         return s
 
-    wb = writer.book
+    # wb = writer.book
 
     # Consolidated JE or JE Lines (Grouped by Deposit)
     for sheet_name in ["Consolidated JE", "JE Lines (Grouped by Deposit)"]:
