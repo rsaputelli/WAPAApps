@@ -1266,8 +1266,6 @@ if run_btn:
     out_buf = io.BytesIO()
 
     with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
-    st.session_state.xlsx_bytes = out_buf.getvalue()
-    st.session_state.did_run = True
         
         # ---- NEW first two tabs ----
         if not refunds_df.empty:
@@ -1322,6 +1320,10 @@ if run_btn:
             oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}),
             "Out-of-Period Refunds (Review)"
         )
+
+# Save workbook bytes and mark run complete (still inside the 'with' block)
+st.session_state.xlsx_bytes = out_buf.getvalue()
+st.session_state.did_run = True
 
 # --- End of Excel writing block (flush left below) ---
 if st.session_state.did_run and st.session_state.xlsx_bytes:
