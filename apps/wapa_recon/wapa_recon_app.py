@@ -108,6 +108,32 @@ DUES_VAT_OFFSET_INCOME = "Membership Dues:4108 · Offset of CC Processing Fees"
 UNMAPPED_REVIEW_ACCT   = "99999 · Needs Coding (Review)"
 
 # ------------------------- Helpers -------------------------
+
+# --- Safety net for unknown membership labels ("just in case") ---
+UNKNOWN_MEM_TYPES = set()
+
+def classify_member_type(raw_text: str) -> str:
+    """Normalize membership label to our keys; collect unknowns.
+    Returns one of: fellow, member, affiliate, organizational, student, sustaining, hardship
+    Falls back to 'member' and records the raw label to UNKNOWN_MEM_TYPES.
+    """
+    s = (str(raw_text) or "").strip().lower()
+    if "fellow" in s:
+        return "fellow"
+    if "organiz" in s:
+        return "organizational"
+    if "affiliate" in s:
+        return "affiliate"
+    if "student" in s:
+        return "student"
+    if "sustain" in s:
+        return "sustaining"
+    if "hardship" in s:
+        return "hardship"
+    if s and "member" not in s:
+        UNKNOWN_MEM_TYPES.add(raw_text)
+    return "member"
+
 def find_membership_text_col(df):
     preferred = [
         "Member/Non-Member - Membership",
@@ -647,7 +673,7 @@ if run_btn:
             if pd.isna(eff_month):
                 eff_month = pd.NaT
 
-            mt = infer_member_type(mem_str)
+            mt = classify_member_type(mem_str)
             months_current = months_left_in_year(eff_month)
 
             # Determine 24 vs 12 from ANY of: Membership (AD), Allocation Item Desc (N), Item Desc
@@ -688,6 +714,14 @@ if run_btn:
             })
 
     deferral_df = pd.DataFrame(deferral_rows)
+
+    # Warn if we encountered unknown membership labels
+    try:
+        import streamlit as st
+        if UNKNOWN_MEM_TYPES:
+            st.warning("Defaulted unknown membership labels to Member: " + ", ".join(sorted({str(x) for x in UNKNOWN_MEM_TYPES})))
+    except Exception:
+        pass
 
     # --- JE Lines (grouped by deposit) ---
     je_rows = []
@@ -774,6 +808,7 @@ if run_btn:
             pac_sum = 0.0
             vat_dues_sum = 0.0
             vat_other_sum = 0.0
+            vat_sum = 0.0  # compatibility accumulator
             mem_recognize = 0.0
             mem_defer_210 = 0.0
             mem_defer_212 = 0.0
