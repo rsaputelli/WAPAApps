@@ -1590,7 +1590,7 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
             st.dataframe(st.session_state.deferral_df.head(200))
 
 
---- Add TOTAL row to Consolidated JE (Single Entry)
+#--- Add TOTAL row to Consolidated JE (Single Entry)
 # try:
     # if 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
         # _tot_dr = round(float(consolidated_je.get("Debit", pd.Series(dtype=float)).fillna(0).sum()), 2)
@@ -1607,7 +1607,7 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
 # except Exception as _e:
     # pass
 
---- Add TOTAL row to JE Balance Check
+#--- Add TOTAL row to JE Balance Check
 # try:
     # if 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
         # _bdr = round(float(balance_df.get("Debits", pd.Series(dtype=float)).fillna(0).sum()), 2)
