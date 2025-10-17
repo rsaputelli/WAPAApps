@@ -586,33 +586,32 @@ if run_btn:
                     "source": "YM Allocations",
                 })
 
-    # 4) PAC donations that appear only in PayPal (not in YM) — Col O = Item Title ("Online+Donation+(WAPA+PAC)")
-    # This version normalizes "Item Title" so patterns like "Online+Donation+(WAPA+PAC)" are detected reliably,
-    # and it still avoids double-counting anything already matched to YM by Transaction ID.
+    # 4) PAC donations that appear only in PayPal (not in YM) — normalize Item Title (Col O)
+    # Catches patterns like "Online+Donation+(WAPA+PAC)" and avoids double-counting if the PP txn already matched YM.
     import re
     
-    # Prefer the known Item Title column if present; otherwise, fall back to finding it case-insensitively.
+    # Find the item title column (normalized headers -> "item_title")
     item_title_col = None
     if 'pp_item_title_col' in locals() and pp_item_title_col and pp_item_title_col in pp.columns:
         item_title_col = pp_item_title_col
     else:
         for c in pp.columns:
-            if str(c).strip().lower() == "item title":
+            if str(c).strip().lower() == "item_title":
                 item_title_col = c
                 break
     
-    # Build PP txn key (for excluding rows already matched to YM by Transaction ID)
+    # Build PP txn key for exclusion of already-matched YM rows
     if pp_txn_col and pp_txn_col in pp.columns:
         pp["_pp_txn_key"] = pp[pp_txn_col].astype(str).str.strip()
     else:
         pp["_pp_txn_key"] = ""
     
-    # Eligible PP rows: non-withdrawals that belong to a deposit group
+    # Eligible rows = non-withdrawal transactions that belong to a deposit group
     pac_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna())
     if matched_txns:
         pac_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
     
-    # Normalize Item Title for robust matching: "+" and punctuation -> space, lowercase, collapse spaces
+    # Normalize Item Title so "Online+Donation+(WAPA+PAC)" → "online donation wapa pac"
     if item_title_col:
         pp["_pp_item_title_norm"] = (
             pp[item_title_col]
@@ -621,20 +620,20 @@ if run_btn:
             .str.replace(r"[+_]", " ", regex=True)        # plus/underscores → space
             .str.replace(r"[^\w\s]", " ", regex=True)     # other punctuation → space
             .str.lower()
-            .str.replace(r"\s+", " ", regex=True)         # collapse multiple spaces
+            .str.replace(r"\s+", " ", regex=True)         # collapse spaces
             .str.strip()
         )
     else:
         pp["_pp_item_title_norm"] = ""
     
     # PAC keyword detection on normalized Item Title
-    # accepts "wapa pac", "political action", or a standalone "pac"
     pac_re = r"(?:\bwapa\s+pac\b|\bpolitical\s+action\b|\bpac\b)"
     
     pp["_pp_pac_only"] = pac_mask & pp["_pp_item_title_norm"].str.contains(pac_re, regex=True, na=False)
     pac_only = pp.loc[pp["_pp_pac_only"]].copy()
     
     if not pac_only.empty and (pp_gross_col in pac_only.columns):
+        # Sum GROSS per deposit group → credit liability (fees are handled elsewhere)
         pac_add = (
             pac_only.groupby("_dep_gid")[pp_gross_col]
             .sum()
@@ -649,11 +648,17 @@ if run_btn:
                 "deposit_gid": int(r["_dep_gid"]),
                 "date": None,
                 "line_type": "CREDIT",
-                "account": PAC_LIABILITY,  # e.g., "2202 · Due to WAPA PAC"
+                "account": PAC_LIABILITY,  # "2202 · Due to WAPA PAC"
                 "description": "PAC Donation (PayPal Item Title)",
                 "amount": round(amt, 2),
                 "source": "PayPal PAC (Item Title only)",
             })
+    
+    # Quick on-screen audit so you can confirm gid 7 & 10 immediately
+    with st.expander("PAC-only rows detected from PayPal Item Title"):
+        preview_cols = ["_dep_gid", pp_date_col, pp_txn_col, item_title_col, pp_gross_col]
+        preview_cols = [c for c in preview_cols if c in pp.columns]
+        st.dataframe(pac_only[preview_cols].sort_values(["_dep_gid"]).head(500))
 
     je_df = pd.DataFrame(je_rows)
 
