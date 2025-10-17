@@ -1590,40 +1590,40 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
             st.dataframe(st.session_state.deferral_df.head(200))
 
 
-# --- Add TOTAL row to Consolidated JE (Single Entry)
-try:
-    if 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
-        _tot_dr = round(float(consolidated_je.get("Debit", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        _tot_cr = round(float(consolidated_je.get("Credit", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        consolidated_je = pd.concat([
-            consolidated_je,
-            pd.DataFrame([{
-                "account": "TOTAL",
-                "Debit": _tot_dr,
-                "Credit": _tot_cr,
-                "Memo": "Check: Debits should equal Credits"
-            }])
-        ], ignore_index=True)
-except Exception as _e:
-    pass
+--- Add TOTAL row to Consolidated JE (Single Entry)
+# try:
+    # if 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
+        # _tot_dr = round(float(consolidated_je.get("Debit", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # _tot_cr = round(float(consolidated_je.get("Credit", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # consolidated_je = pd.concat([
+            # consolidated_je,
+            # pd.DataFrame([{
+                # "account": "TOTAL",
+                # "Debit": _tot_dr,
+                # "Credit": _tot_cr,
+                # "Memo": "Check: Debits should equal Credits"
+            # }])
+        # ], ignore_index=True)
+# except Exception as _e:
+    # pass
 
-# --- Add TOTAL row to JE Balance Check
-try:
-    if 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
-        _bdr = round(float(balance_df.get("Debits", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        _bcr = round(float(balance_df.get("Credits", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        _bdiff = round(_bdr - _bcr, 2)
-        balance_df = pd.concat([
-            balance_df,
-            pd.DataFrame([{
-                "deposit_gid": "TOTAL",
-                "Debits": _bdr,
-                "Credits": _bcr,
-                "Diff": _bdiff
-            }])
-        ], ignore_index=True)
-except Exception as _e:
-    pass
+--- Add TOTAL row to JE Balance Check
+# try:
+    # if 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
+        # _bdr = round(float(balance_df.get("Debits", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # _bcr = round(float(balance_df.get("Credits", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # _bdiff = round(_bdr - _bcr, 2)
+        # balance_df = pd.concat([
+            # balance_df,
+            # pd.DataFrame([{
+                # "deposit_gid": "TOTAL",
+                # "Debits": _bdr,
+                # "Credits": _bcr,
+                # "Diff": _bdiff
+            # }])
+        # ], ignore_index=True)
+# except Exception as _e:
+    # pass
 
 
     # --- Add Excel-formula totals for JE sheets ---
