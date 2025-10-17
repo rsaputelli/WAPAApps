@@ -1146,11 +1146,14 @@ if run_btn:
     st.success("Reconciliation complete.")
     st.dataframe(balance_df)
 
+    st.success("Reconciliation complete.")
+    st.dataframe(balance_df)
+
     st.download_button(
         label="Download Excel Workbook",
         data=out_buf.getvalue(),
         file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_xlsx"
     )
 
@@ -1160,15 +1163,4 @@ if run_btn:
     if not deferral_df.empty:
         with st.expander("Preview: Deferral Schedule (first 200 rows)"):
             st.dataframe(deferral_df.head(200))
-
-
-    # out_buf already contains the XLSX
-    st.download_button(
-        label="Download Excel Workbook",
-        data=out_buf.getvalue(),
-        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_xlsx"
-    )
-
 
