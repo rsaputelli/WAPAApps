@@ -1587,3 +1587,44 @@ try:
         ], ignore_index=True)
 except Exception as _e:
     pass
+
+
+    # --- Add Excel-formula totals for JE sheets ---
+    def _col_letter(i):
+        s = ""
+        i += 1
+        while i:
+            i, r = divmod(i-1, 26)
+            s = chr(65 + r) + s
+        return s
+
+    wb = writer.book
+
+    # Consolidated JE or JE Lines (Grouped by Deposit)
+    for sheet_name in ["Consolidated JE", "JE Lines (Grouped by Deposit)"]:
+        ws = writer.sheets.get(sheet_name)
+        if ws is not None and 'consolidated_je' in locals() and not consolidated_je.empty:
+            last_row = len(consolidated_je) + 1
+            ws.write(last_row, 0, "TOTAL")
+            for col_name in ["Debit", "Credit"]:
+                if col_name in consolidated_je.columns:
+                    cidx = consolidated_je.columns.get_loc(col_name)
+                    colL = _col_letter(cidx)
+                    ws.write_formula(last_row, cidx, f"=SUM({colL}2:{colL}{last_row})")
+
+    # JE Balance Check totals
+    ws = writer.sheets.get("JE Balance Check")
+    if ws is not None and 'balance_df' in locals() and not balance_df.empty:
+        last_row = len(balance_df) + 1
+        ws.write(last_row, 0, "TOTAL")
+        for col_name in ["Debits", "Credits"]:
+            if col_name in balance_df.columns:
+                cidx = balance_df.columns.get_loc(col_name)
+                colL = _col_letter(cidx)
+                ws.write_formula(last_row, cidx, f"=SUM({colL}2:{colL}{last_row})")
+        if "Debits" in balance_df.columns and "Credits" in balance_df.columns and "Diff" in balance_df.columns:
+            d_idx = balance_df.columns.get_loc("Debits")
+            c_idx = balance_df.columns.get_loc("Credits")
+            diff_idx = balance_df.columns.get_loc("Diff")
+            dL, cL, diffL = _col_letter(d_idx), _col_letter(c_idx), _col_letter(diff_idx)
+            ws.write_formula(last_row, diff_idx, f"={dL}{last_row+1}-{cL}{last_row+1}")
