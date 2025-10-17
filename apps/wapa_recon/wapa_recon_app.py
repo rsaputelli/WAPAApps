@@ -353,25 +353,39 @@ if run_btn:
                 "source": "Withdrawal",
             })
 
-    # 2) DR Fees by account per deposit
-    if pp_item_title_col and pp_fee_col:
-        fee_tx = pp.loc[(~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp[pp_fee_col].notna())].copy()
-        fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
-        # make fees positive for debit lines
-        fee_tx["_fee_amt_pos"] = fee_tx[pp_fee_col].abs()
-        fee_alloc = fee_tx.groupby(["_dep_gid", "_fee_account"])["_fee_amt_pos"].sum().reset_index()
-        for _, r in fee_alloc.iterrows():
-            if float(r["_fee_amt_pos"] or 0) == 0:
-                continue
-            je_rows.append({
-                "deposit_gid": int(r["_dep_gid"]),
-                "date": None,
-                "line_type": "DEBIT",
-                "account": r["_fee_account"],
-                "description": "PayPal Fees by Item Title",
-                "amount": round(float(r[pp_fee_col]), 2),
-                "source": "PayPal Fees",
-            })
+# 2) DR Fees by account per deposit  (FIXED)
+if pp_item_title_col and pp_fee_col and (pp_fee_col in pp.columns):
+    fee_tx = pp.loc[
+        (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp[pp_fee_col].notna())
+    ].copy()
+
+    fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
+
+    # Make fees positive for debit lines and aggregate by deposit + account
+    fee_tx["_fee_amt_pos"] = fee_tx[pp_fee_col].abs()
+    fee_alloc = (
+        fee_tx.groupby(["_dep_gid", "_fee_account"])["_fee_amt_pos"]
+        .sum()
+        .reset_index()
+    )
+
+    for _, r in fee_alloc.iterrows():
+        amt = float(r["_fee_amt_pos"] or 0.0)
+        if amt == 0:
+            continue
+        je_rows.append({
+            "deposit_gid": int(r["_dep_gid"]),
+            "date": None,
+            "line_type": "DEBIT",
+            "account": r["_fee_account"],
+            "description": "PayPal Fees by Item Title",
+            "amount": round(amt, 2),
+            "source": "PayPal Fees",
+        })
+else:
+    # No fee column found — skip fee debits gracefully
+    pass
+
 
     # 3) CREDIT side per deposit using YM allocations, with deferral + PAC + VAT + discounts rules
     # Build lookup from deferral_df for membership dues portions by TransactionID
