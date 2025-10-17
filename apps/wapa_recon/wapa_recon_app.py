@@ -46,7 +46,6 @@ from PIL import Image
 
 # --- Page setup ---
 st.set_page_config(
-    
     page_icon="logo.png",   # Uses the Lutine logo in the browser tab
     layout="wide"
 )
