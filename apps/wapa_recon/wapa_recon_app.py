@@ -800,7 +800,7 @@ if run_btn:
                     "deposit_gid": dep_gid,
                     "date": None,
                     "line_type": "CREDIT",
-                    "account": mem_acct_212 or DEF_MEMBERSHIP_DEFAULT_FOLLOW",
+                    "account": mem_acct_212 or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
                     "description": "Membership Dues (deferred to 2027)",
                     "amount": round(mem_defer_212, 2),
                     "source": "Membership Deferral",
