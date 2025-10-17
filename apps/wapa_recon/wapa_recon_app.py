@@ -203,8 +203,6 @@ def is_pac_line(item_desc: str, gl_code: str, payment_desc: str) -> bool:
     return is_pac_text(item_desc) or is_pac_text(payment_desc) or ("pac" in g)
 
 # ------------------------- UI -------------------------
-st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals + PAC + VAT")
-
 st.markdown("""
 Upload CSVs (any column order is OK; headers auto-detected):
 
