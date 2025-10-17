@@ -1581,16 +1581,16 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
     if st.session_state.balance_df is not None:
         st.dataframe(st.session_state.balance_df)
 
-    _anchor = pd.to_datetime(recon_anchor)
-    run_dt = (_anchor + pd.offsets.MonthEnd(0)).strftime("%Y.%m.%d")
-    st.caption("💡 If Excel opens in Protected View, totals may show $0 until you click **Enable Editing**.")
-    st.download_button(
-        label="Download Excel Workbook",
-        data=st.session_state.xlsx_bytes,
-        file_name=f"{run_dt} WAPA PayPal and YM Recon.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_xlsx"
-    )
+    # _anchor = pd.to_datetime(recon_anchor)
+    # run_dt = (_anchor + pd.offsets.MonthEnd(0)).strftime("%Y.%m.%d")
+    # st.caption("💡 If Excel opens in Protected View, totals may show $0 until you click **Enable Editing**.")
+    # st.download_button(
+        # label="Download Excel Workbook",
+        # data=st.session_state.xlsx_bytes,
+        # file_name=f"{run_dt} WAPA PayPal and YM Recon.xlsx",
+        # mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        # key="download_xlsx"
+    # )
 
     if st.session_state.je_out_df is not None:
         with st.expander("Preview: JE Lines (first 200 rows)"):
