@@ -300,9 +300,9 @@ if run_btn:
 
     # --- YM: keep only rows whose Payment Date falls inside the window
     if ym_pay_date_col:
-        ym = ym.loc(ym["_ym_pay_date"].between(window_start, window_end)).copy() if not ym.empty else ym
-        # safer alt when df may be empty:
-        # ym = ym.loc[ym["_ym_pay_date"].between(window_start, window_end)].copy()
+        if not ym.empty:
+            ym = ym.loc[ym["_ym_pay_date"].between(window_start, window_end)].copy()
+
 
     # --- PayPal: keep only CHILD transactions that:
     #     (a) belong to a deposit whose WITHDRAWAL DATE is inside the selected month
