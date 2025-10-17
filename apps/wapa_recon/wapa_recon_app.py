@@ -965,6 +965,32 @@ if run_btn:
     pp["_pp_invoice_payment_only"] = inv_mask & pp["_pp_item_title_norm_inv"].str.contains(inv_re, regex=True, na=False)
     inv_only = pp.loc[pp["_pp_invoice_payment_only"]].copy()
 
+    # --- Reclassify known dues price points to 4101 BEFORE 99999 ---
+    DUES_PRICE_POINTS = {165.00, 175.00, 50.00, 99.00}
+    if not inv_only.empty and (pp_gross_col in inv_only.columns):
+        inv_only["_gross2"] = pd.to_numeric(inv_only[pp_gross_col], errors="coerce").round(2)
+
+        inv_dues = inv_only.loc[inv_only["_gross2"].isin(DUES_PRICE_POINTS)].copy()
+        inv_only = inv_only.loc[~inv_only.index.isin(inv_dues.index)].copy()
+
+        if not inv_dues.empty:
+            dues_add = (
+                inv_dues.groupby("_dep_gid")["_gross2"]
+                .sum().reset_index().rename(columns={"_gross2": "dues_amt"})
+            )
+            for _, r in dues_add.iterrows():
+                amt = float(r["dues_amt"] or 0)
+                if amt:
+                    je_rows.append({
+                        "deposit_gid": int(r["_dep_gid"]),
+                        "date": None,
+                        "line_type": "CREDIT",
+                        "account": "4101 · Membership Dues",
+                        "description": "PayPal Invoice Payment (dues price matched)",
+                        "amount": round(amt, 2),
+                        "source": "Invoice-only price match",
+                    })
+
     if not inv_only.empty and (pp_gross_col in inv_only.columns):
         inv_only["_invoice_no"] = inv_only["_pp_item_title_norm_inv"].str.extract(inv_re, expand=False)
         inv_add = (
