@@ -222,6 +222,14 @@ if "did_run" not in st.session_state:
 if "xlsx_bytes" not in st.session_state:
     st.session_state.xlsx_bytes = None
 
+
+# Persist dataframe previews to avoid NameError after reruns
+if "balance_df" not in st.session_state:
+    st.session_state.balance_df = None
+if "je_out_df" not in st.session_state:
+    st.session_state.je_out_df = None
+if "deferral_df" not in st.session_state:
+    st.session_state.deferral_df = None
 # ---- Run button ----
 run_btn = st.button("Run Reconciliation", key="run_recon_btn")
 
@@ -889,7 +897,53 @@ if run_btn:
         preview_cols = [c for c in preview_cols if c in pac_only.columns]
         st.dataframe(pac_only[preview_cols].sort_values(["_dep_gid"]).head(500))
 
-    # 5) PayPal-only "Payment for Invoice No. ####" → 99999 placeholder
+    # 5a) PayPal-only Registration payments → credit default 4302 (runs BEFORE invoice fallback)
+reg_mask = (
+    (~pp["_is_withdrawal"]) &
+    (pp["_dep_gid"].notna()) &
+    (pp["_child_in_window"]))
+if matched_txns:
+    reg_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
+
+if item_title_col:
+    pp["_pp_item_title_norm_reg"] = (
+        pp[item_title_col]
+          .astype(str).fillna("")
+          .str.replace(r"[+_]", " ", regex=True)
+          .str.replace(r"[^\w\s]", " ", regex=True)
+          .str.lower()
+          .str.replace(r"\s+", " ", regex=True)
+          .str.strip()
+    )
+else:
+    pp["_pp_item_title_norm_reg"] = ""
+
+reg_kw = r"(registration|conference|cme|meeting\s*registration|attendee)"
+pp["_pp_registration_only"] = reg_mask & pp["_pp_item_title_norm_reg"].str.contains(reg_kw, regex=True, na=False)
+pp_reg_only = pp.loc[pp["_pp_registration_only"]].copy()
+
+if not pp_reg_only.empty and (pp_gross_col in pp_reg_only.columns):
+    reg_add = (
+        pp_reg_only.groupby("_dep_gid")[pp_gross_col]
+        .sum()
+        .reset_index()
+        .rename(columns={pp_gross_col: "reg_amt"})
+    )
+    DEFAULT_REG_ACCOUNT = "4302 · Registration Income"
+    for _, r in reg_add.iterrows():
+        amt = float(r["reg_amt"] or 0)
+        if amt:
+            je_rows.append({
+                "deposit_gid": int(r["_dep_gid"]),
+                "date": None,
+                "line_type": "CREDIT",
+                "account": DEFAULT_REG_ACCOUNT,
+                "description": "PayPal Registration (unmatched)",
+                "amount": round(amt, 2),
+                "source": "PayPal Item Title (registration keywords)",
+            })
+
+# 5) PayPal-only "Payment for Invoice No. ####" → 99999 placeholder
     inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_child_in_window"])
     if matched_txns:
         inv_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
@@ -1325,10 +1379,26 @@ if run_btn:
     st.session_state.xlsx_bytes = out_buf.getvalue()
     st.session_state.did_run = True
 
+
+# Persist dataframes for safe UI rendering across reruns
+try:
+    st.session_state.balance_df = balance_df.copy() if 'balance_df' in locals() else None
+except Exception:
+    st.session_state.balance_df = None
+try:
+    st.session_state.je_out_df = je_out.copy() if 'je_out' in locals() else None
+except Exception:
+    st.session_state.je_out_df = None
+try:
+    st.session_state.deferral_df = deferral_df.copy() if 'deferral_df' in locals() else None
+except Exception:
+    st.session_state.deferral_df = None
 # --- End of Excel writing block (flush left below) ---
 if st.session_state.did_run and st.session_state.xlsx_bytes:
     st.success("Reconciliation complete.")
-    st.dataframe(balance_df)
+
+    if st.session_state.balance_df is not None:
+        st.dataframe(st.session_state.balance_df)
 
     st.download_button(
         label="Download Excel Workbook",
@@ -1338,11 +1408,10 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
         key="download_xlsx"
     )
 
-    with st.expander("Preview: JE Lines (first 200 rows)"):
-        st.dataframe(je_out.head(200))
+    if st.session_state.je_out_df is not None:
+        with st.expander("Preview: JE Lines (first 200 rows)"):
+            st.dataframe(st.session_state.je_out_df.head(200))
 
-    if not deferral_df.empty:
+    if st.session_state.deferral_df is not None and not st.session_state.deferral_df.empty:
         with st.expander("Preview: Deferral Schedule (first 200 rows)"):
-            st.dataframe(deferral_df.head(200))
-
-
+            st.dataframe(st.session_state.deferral_df.head(200))
