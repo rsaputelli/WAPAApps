@@ -1197,80 +1197,83 @@ if run_btn:
             "sum", "calc", "variance"
         ]
         return any(h in name for h in hints)
-# ---- safety: make sure all output DataFrames exist before Excel writing ----
-if "refunds_df" not in locals():
-    refunds_df = pd.DataFrame()
+    # ---- safety: make sure all output DataFrames exist before Excel writing ----
+    if "refunds_df" not in locals():
+        refunds_df = pd.DataFrame()
 
-if "je_out" not in locals():
-    je_out = pd.DataFrame(columns=["deposit_gid","date","account","description","Debit","Credit","source"])
-
-if "consolidated_je" not in locals():
     if "je_out" not in locals():
-        je_out = pd.DataFrame(columns=["account","Debit","Credit"])
+        je_out = pd.DataFrame(columns=["deposit_gid","date","account","description","Debit","Credit","source"])
 
-    if not je_out.empty:
-        _dr = je_out[["account","Debit"]].dropna(subset=["Debit"]).copy()
-        _cr = je_out[["account","Credit"]].dropna(subset=["Credit"]).copy()
+    if "consolidated_je" not in locals():
+        if "je_out" not in locals():
+            je_out = pd.DataFrame(columns=["account","Debit","Credit"])
 
-        _dr["Debit"]  = pd.to_numeric(_dr["Debit"], errors="coerce")
-        _cr["Credit"] = pd.to_numeric(_cr["Credit"], errors="coerce")
+        if not je_out.empty:
+            _dr = je_out[["account","Debit"]].dropna(subset=["Debit"]).copy()
+            _cr = je_out[["account","Credit"]].dropna(subset=["Credit"]).copy()
 
-        dr_tot = _dr.groupby("account", as_index=False)["Debit"].sum()
-        cr_tot = _cr.groupby("account", as_index=False)["Credit"].sum()
+            _dr["Debit"]  = pd.to_numeric(_dr["Debit"], errors="coerce")
+            _cr["Credit"] = pd.to_numeric(_cr["Credit"], errors="coerce")
 
-        consolidated_je = dr_tot.merge(cr_tot, on="account", how="outer").fillna(0.0)
-        consolidated_je["Debit"]  = consolidated_je["Debit"].astype(float).round(2)
-        consolidated_je["Credit"] = consolidated_je["Credit"].astype(float).round(2)
-        consolidated_je = consolidated_je.loc[~((consolidated_je["Debit"] == 0) & (consolidated_je["Credit"] == 0))].copy()
-        consolidated_je["Memo"] = "Consolidated JE — single multi-line entry"
-    else:
-        consolidated_je = pd.DataFrame(columns=["account","Debit","Credit","Memo"])
+            dr_tot = _dr.groupby("account", as_index=False)["Debit"].sum()
+            cr_tot = _cr.groupby("account", as_index=False)["Credit"].sum()
 
-# Always define dep_out and _ym_detail because we always write those sheets
-if "dep_out" not in locals():
-    dep_out = pd.DataFrame(columns=[
-        "deposit_gid","PayPal Withdrawal Date","Bank Deposit Date","Withdrawal Gross",
-        "Withdrawal Fee","Withdrawal Net","# PayPal Txns","Sum Gross (Txns)",
-        "Sum Fees (Txns)","Sum Net (Txns)","Calc Net (Gross-Fees)","Variance vs Withdrawal Net"
-    ])
+            consolidated_je = dr_tot.merge(cr_tot, on="account", how="outer").fillna(0.0)
+            consolidated_je["Debit"]  = consolidated_je["Debit"].astype(float).round(2)
+            consolidated_je["Credit"] = consolidated_je["Credit"].astype(float).round(2)
+            consolidated_je = consolidated_je.loc[~((consolidated_je["Debit"] == 0) & (consolidated_je["Credit"] == 0))].copy()
+            consolidated_je["Memo"] = "Consolidated JE — single multi-line entry"
+        else:
+            consolidated_je = pd.DataFrame(columns=["account","Debit","Credit","Memo"])
 
-if "_ym_detail" not in locals():
-    _ym_detail = pd.DataFrame(columns=[
-        "deposit_gid","TransactionID","Item Descriptions","GL Codes","Allocation",
-        "Dues Receipt Date (col Z)","Effective Receipt Month","Membership",
-        "Payment Description","Allocation Item Desc (YTD)","Category"
-    ])
+    # Always define dep_out and _ym_detail because we always write those sheets
+    if "dep_out" not in locals():
+        dep_out = pd.DataFrame(columns=[
+            "deposit_gid","PayPal Withdrawal Date","Bank Deposit Date","Withdrawal Gross",
+            "Withdrawal Fee","Withdrawal Net","# PayPal Txns","Sum Gross (Txns)",
+            "Sum Fees (Txns)","Sum Net (Txns)","Calc Net (Gross-Fees)","Variance vs Withdrawal Net"
+        ])
 
-# Others are conditionally written; keep them defined anyway
-if "oop_refunds" not in locals():
-    oop_refunds = pd.DataFrame()
+    if "_ym_detail" not in locals():
+        _ym_detail = pd.DataFrame(columns=[
+            "deposit_gid","TransactionID","Item Descriptions","GL Codes","Allocation",
+            "Dues Receipt Date (col Z)","Effective Receipt Month","Membership",
+            "Payment Description","Allocation Item Desc (YTD)","Category"
+        ])
 
-if "deferral_df" not in locals():
-    deferral_df = pd.DataFrame()
+    # Others are conditionally written; keep them defined anyway
+    if "oop_refunds" not in locals():
+        oop_refunds = pd.DataFrame()
 
-if "balance_df" not in locals():
-    balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
-    
-# ---- safety: ensure moneyish() exists before Excel writer ----
-if "moneyish" not in globals():
-    def moneyish(colname: str) -> bool:
-        if not isinstance(colname, str):
-            return False
-        name = colname.lower()
-        hints = [
-            "amount", "debit", "credit", "debits", "credits", "diff",
-            "gross", "fee", "net", "allocation", "recognize", "defer",
-            "sum", "calc", "variance"
-        ]
-        return any(h in name for h in hints)
-out_buf = io.BytesIO()
+    if "deferral_df" not in locals():
+        deferral_df = pd.DataFrame()
 
-with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
-    # ---- NEW first two tabs ----
-    if not refunds_df.empty:
-        refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
+    if "balance_df" not in locals():
+        balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
+        
+    # ---- safety: ensure moneyish() exists before Excel writer ----
+    if "moneyish" not in globals():
+        def moneyish(colname: str) -> bool:
+            if not isinstance(colname, str):
+                return False
+            name = colname.lower()
+            hints = [
+                "amount", "debit", "credit", "debits", "credits", "diff",
+                "gross", "fee", "net", "allocation", "recognize", "defer",
+                "sum", "calc", "variance"
+            ]
+            return any(h in name for h in hints)
+    out_buf = io.BytesIO()
 
-    consolidated_je.to_excel(writer, sheet_name="Consolidated JE (Single Entry)", index=False)
+    with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
+    st.session_state.xlsx_bytes = out_buf.getvalue()
+    st.session_state.did_run = True
+        
+        # ---- NEW first two tabs ----
+        if not refunds_df.empty:
+            refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
+
+        consolidated_je.to_excel(writer, sheet_name="Consolidated JE (Single Entry)", index=False)
 
     # ---- existing tabs ----
     dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
