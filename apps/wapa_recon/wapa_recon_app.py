@@ -107,6 +107,38 @@ VAT_OFFSET_INCOME      = "4314 · Offset of Credit Card Trans Fees"
 UNMAPPED_REVIEW_ACCT   = "99999 · Needs Coding (Review)"
 
 # ------------------------- Helpers -------------------------
+def find_membership_text_col(df):
+    preferred = [
+        "Member/Non-Member - Membership",
+        "Membership",
+        "Member/Non-Member - Member Type",
+        "Member Type",
+    ]
+    lower = {c.lower(): c for c in df.columns}
+    for name in preferred:
+        if name.lower() in lower:
+            return lower[name.lower()]
+    for c in df.columns:
+        cl = c.lower()
+        if "membership" in cl and "date" not in cl and "expire" not in cl:
+            return c
+    return None
+
+import re as _re_for_gl_pick
+def pick_410_from_gl(gl_code_raw: str):
+    s = str(gl_code_raw or "").strip()
+    if not s:
+        return None
+    tokens = [t for t in _re_for_gl_pick.split(r"[,\|\;/\s]+", s) if t]
+    def lead(tok):
+        m = _re_for_gl_pick.match(r"(\d{3,5})", tok)
+        return m.group(1) if m else None
+    nums = [lead(t) for t in tokens if lead(t)]
+    for n in nums:
+        if n.startswith("410"):
+            return n
+    return None
+
 def norm_text(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
@@ -303,10 +335,15 @@ if run_btn:
     # --- YM columns ---
     ym_ref_col        = find_col(ym, ["invoice_-_reference_number", "invoice_reference_number", "reference_number", "invoice"])
     ym_item_desc_col  = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])   # N (legacy)
-    ym_gl_code_col    = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                # O
+    ym_gl_code_col    = find_col(ym, [
+        "payment_allocation_(year-to-date)_-_item_gl_code",
+        "payment_allocation_-_item_gl_code",
+        "item_gl_code",
+        "gl_codes", "gl_code", "gl", "account", "account_code"
+    ])                # O
     ym_alloc_col      = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])              # Q
     ym_dues_rcpt_col  = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
-    ym_membership_col = find_col(ym, ["membership", "membership_type"])                                       # AD
+    ym_membership_col = find_membership_text_col(ym)                                                          # AD (text)
     ym_pay_desc_col   = find_col(ym, ["payment_description", "payment_descriptions", "payment_desc", "ym_payment_description"])
 
     # Allocation Item Description (for VAT/Refund flagging)
@@ -627,11 +664,11 @@ if run_btn:
                 "Months Next (2026)": next_mo,
                 "Months Following (2027)": follow_mo,
                 "Recognize Current (→ 410x)": amt_cur,
-                "Defer 2026 (→ 210x)": amt_next,
-                "Defer 2027 (→ 212x)": amt_follow,
-                "Rev Account (410x)": REV_DUES_BY_TYPE.get(mt, REV_MEMBERSHIP_DEFAULT),
-                "Defer 2026 Acct (210x)": DEFER_210_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_NEXT),
-                "Defer 2027 Acct (212x)": DEFER_212_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_FOLLOW),
+                "Defer 2026 (→ 212x)": amt_next,
+                "Defer 2027 (→ 210x)": amt_follow,
+                "Rev Account (410x)": (pick_410_from_gl(gl_code) or REV_DUES_BY_TYPE.get(mt, REV_MEMBERSHIP_DEFAULT)),
+                "Defer 2026 Acct (212x)": DEFER_212_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_NEXT),
+                "Defer 2027 Acct (210x)": DEFER_210_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_FOLLOW),
             })
 
     deferral_df = pd.DataFrame(deferral_rows)
