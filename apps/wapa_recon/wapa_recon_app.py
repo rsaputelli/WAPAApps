@@ -1,31 +1,68 @@
 
-# wapa_recon_app_v5c.py
+# wapa_recon_app_v5d.py
 # Streamlit app for WAPA PayPal ↔ YM ↔ Bank reconciliation
-# JE Lines grouped by deposit with Deferrals + PAC liability (v5c)
+# JE Lines grouped by deposit with Deferrals (12/24 mo) + PAC liability
+# - Uses YM column "Member/Non-Member - Date Last Dues Transaction" for receipt date (col Z in your sheet)
+# - Mid-month rule: <=15 → current month; >15 → next month
+# - 12-month dues: split current-year vs next-year (210x = 2026 labels)
+# - 24-month dues: split current-year, then 12 months to 210x (2026), remainder to 212x (2027)
+# - Membership-type mapping to 4101–4107 (revenue), 2101–2107 (2026 deferrals), 2125–2131 (2027 deferrals)
 #
 # Run:
-#   streamlit run wapa_recon_app_v5c.py
+#   streamlit run wapa_recon_app_v5d.py
 
 import io
 import re
 import numpy as np
 import pandas as pd
 import streamlit as st
-from datetime import timedelta
 
 st.set_page_config(page_title="WAPA Recon (JE grouped + Deferrals + PAC)", layout="wide")
 
 # ------------------------- Config -------------------------
 BANK_GL = "1002 · TD Bank Checking x6455"
 
-# Expense routing for fees by item title (unchanged)
+# Expense routing for fees by item title
 FEE_ACCT_MEMBERSHIP = "5104 · Membership Expenses:5104 · Dues Expense"
 FEE_ACCT_CONFERENCE = "5316 · Fall Conference Expenses:5316 · Registration"
 FEE_ACCT_OTHER      = "5012 · Administrative Expenses:5012 · Bank Charges/Credit Card Fees"
 
-# Revenue/Deferred defaults (can be refined to 4101–4107 ↔ 2101–2107 if mapping is provided)
+# Revenue (current-year) by membership type
+REV_DUES_BY_TYPE = {
+    "fellow":       "4101 · Fellow Membership",
+    "member":       "4102 · Member Membership",
+    "affiliate":    "4103 · Affiliate Membership",
+    "organization": "4104 · Organizational Membership",
+    "student":      "4105 · Student Membership",
+    "sustaining":   "4106 · Sustaining Membership",
+    "hardship":     "4107 · Hardship Membership",
+}
 REV_MEMBERSHIP_DEFAULT = "4100 · Membership Dues"
-DEF_MEMBERSHIP_DEFAULT = "2100 · Deferred Dues"
+
+# Deferred (liability) account names by membership type
+# 210x -> Next FY (labels 2026)
+DEFER_210_BY_TYPE = {
+    "fellow":       "2101 · Deferred Dues - Fellow 2026",
+    "member":       "2102 · Deferred Dues - Member 2026",
+    "affiliate":    "2103 · Deferred Dues - Affiliate 2026",
+    "organization": "2104 · Defer Dues - Organization 2026",
+    "student":      "2105 · Deferred Dues - Student 2026",
+    "sustaining":   "2106 · Deferred Dues - Sustaining 2026",
+    "hardship":     "2107 · Deferred Dues - Hardship 2026",
+}
+# 212x -> Following FY (labels 2027)
+DEFER_212_BY_TYPE = {
+    "fellow":       "2125 · Deferred Dues - Fellow 2027",
+    "member":       "2126 · Deferred Dues - Member 2027",
+    "affiliate":    "2127 · Deferred Dues - Affiliate 2027",
+    "organization": "2128 · Defer Dues - Organization 2027",
+    "student":      "2129 · Deferred Dues - Student 2027",
+    "sustaining":   "2130 · Deferred Dues - Sustaining 2027",
+    "hardship":     "2131 · Deferred Dues - Hardship 2027",
+}
+DEF_MEMBERSHIP_DEFAULT_NEXT = "2100 · Deferred Dues (Next FY)"
+DEF_MEMBERSHIP_DEFAULT_FOLLOW = "2100 · Deferred Dues (Following FY)"
+
 PAC_LIABILITY          = "2202 · Due to WAPA PAC"
 VAT_OFFSET_INCOME      = "4314 · Fall Conference CC Fee Offset"
 
@@ -53,6 +90,7 @@ def find_col(df, candidates):
     for c in candidates:
         if c in df.columns:
             return c
+    # fuzzy contains fallback
     for col in df.columns:
         for cand in candidates:
             if cand in col:
@@ -75,68 +113,65 @@ def choose_fee_account_from_item_title(item_title: str) -> str:
         return FEE_ACCT_CONFERENCE
     return FEE_ACCT_OTHER
 
-def service_start_midmonth_rule(dues_paid_date: pd.Timestamp) -> pd.Timestamp:
-    # <= 15th counts current month; >15 start next month
-    if pd.isna(dues_paid_date):
+def effective_receipt_month(d: pd.Timestamp) -> pd.Timestamp:
+    """Mid-month rule: <=15 use same month; >15 shift to next month start."""
+    if pd.isna(d):
         return pd.NaT
-    if dues_paid_date.day <= 15:
-        return dues_paid_date.replace(day=1)
-    y = dues_paid_date.year + (1 if dues_paid_date.month == 12 else 0)
-    m = 1 if dues_paid_date.month == 12 else dues_paid_date.month + 1
+    if d.day <= 15:
+        return d.replace(day=1)
+    y = d.year + (1 if d.month == 12 else 0)
+    m = 1 if d.month == 12 else d.month + 1
     return pd.Timestamp(year=y, month=m, day=1)
 
-def month_span(beg: pd.Timestamp, months: int):
-    if pd.isna(beg):
-        return []
-    y, m = beg.year, beg.month
-    out = []
-    for _ in range(months):
-        out.append((y, m))
-        if m == 12:
-            y += 1
-            m = 1
-        else:
-            m += 1
-    return out
+def months_left_in_year(start_month: pd.Timestamp) -> int:
+    """Number of months including start_month through December."""
+    if pd.isna(start_month):
+        return 0
+    return 12 - start_month.month + 1
 
-def split_by_calendar_year(months_list):
-    buckets = {"current": 0, "next": 0, "following": 0}
-    if not months_list:
-        return buckets
-    first_year = months_list[0][0]
-    for (y, m) in months_list:
-        if y == first_year:
-            buckets["current"] += 1
-        elif y == first_year + 1:
-            buckets["next"] += 1
-        else:
-            buckets["following"] += 1
-    return buckets
+def infer_member_type(mem_val: str) -> str:
+    s = norm_text(mem_val)
+    for k in ["fellow","member","affiliate","organization","student","sustaining","hardship"]:
+        if k in s:
+            return k
+    return "member"
 
-def allocate_amount_by_buckets(amount: float, buckets: dict) -> dict:
-    total_months = sum(buckets.values())
-    if total_months == 0 or pd.isna(amount):
-        return {"current": 0.0, "next": 0.0, "following": 0.0}
-    shares = {k: (amount * buckets[k] / total_months) for k in buckets}
-    rounded = {k: round(v, 2) for k, v in shares.items()}
-    resid = round(amount - sum(rounded.values()), 2)
-    # bias residue to "current"
-    rounded["current"] = round(rounded["current"] + resid, 2)
-    return rounded
+def is_two_year(mem_val: str) -> bool:
+    s = str(mem_val or "").lower()
+    return ("2-year" in s) or ("2year" in s) or ("two year" in s) or ("24" in s and "month" in s)
+
+def is_discount(desc: str) -> bool:
+    if desc is None:
+        return False
+    return "discount" in str(desc).lower()
+
+def is_vat(desc: str) -> bool:
+    if desc is None:
+        return False
+    d = str(desc).lower()
+    return ("tax" in d) or ("vat" in d)
+
+def is_pac_line(desc: str, gl_code: str) -> bool:
+    d = (desc or "")
+    g = (gl_code or "")
+    return ("pac" in d.lower()) or ("pac" in g.lower()) or ("2202" in g)
 
 # ------------------------- UI -------------------------
-st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped by deposit + Deferrals + PAC")
+st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals (12/24 mo) + PAC")
 
 st.markdown("""
 Upload CSVs (any column order is OK; headers auto-detected):
 
 - **PayPal**: Type, Gross, Fee, Net, Transaction ID, Item Title
-- **YM Export**: Invoice/Reference, Item Description, GL Code, Allocation, Dues Paid Date, Membership
+- **YM Export**: Invoice/Reference, Item Description, GL Code, Allocation, **Member/Non-Member - Date Last Dues Transaction** (col Z), Membership
 - **Bank (TD)**: Date, Description, Deposit/Credit/Amount
 
-Deferral rule: A YM line is **membership dues** only if **Membership is populated AND Item Description contains "dues"**.  
-Recognition: **Current-year portion** is credited to **Revenue**; **Next/Following-year portions** are credited to **Deferred Dues**.  
-PAC Donations: credited to **2202 · Due to WAPA PAC**.
+**Deferral logic**
+- Date source: YM **col Z** (Member/Non-Member - Date Last Dues Transaction)
+- Mid-month rule: payments on or before the 15th count in that month; after the 15th → next month
+- 12-month: current-year months recognized; remainder → **210x (labeled 2026)** by member type
+- 24-month: current-year months recognized; **12 months → 210x (2026)**; remaining months → **212x (2027)**
+- **PAC** credited to 2202; **VAT** credited to 4314; **Discount** rows ignored.
 """)
 
 pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
@@ -199,20 +234,21 @@ if run_btn:
     ym_item_desc_col = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])  # N
     ym_gl_code_col = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                 # O
     ym_alloc_col = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])                 # Q
-    ym_dues_paid_col = find_col(ym, ["dues_paid_date", "paid_date", "membership_paid_date"])
+    ym_dues_rcpt_col = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
     ym_membership_col = find_col(ym, ["membership", "membership_type"])  # AC
 
     if ym_alloc_col and ym[ym_alloc_col].dtype == object:
         ym[ym_alloc_col] = to_float(ym[ym_alloc_col])
 
-    ym["_dues_paid"] = pd.to_datetime(ym[ym_dues_paid_col], errors="coerce") if ym_dues_paid_col else pd.NaT
+    ym["_dues_rcpt"] = pd.to_datetime(ym[ym_dues_rcpt_col], errors="coerce") if ym_dues_rcpt_col else pd.NaT
+    ym["_eff_month"] = ym["_dues_rcpt"].apply(effective_receipt_month)
 
     # Link PP transactions to YM by TransactionID ↔ Reference
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
     ppym = transactions.merge(
-        ym[[c for c in [ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col, "_dues_paid", ym_membership_col] if c]],
+        ym[[c for c in [ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col, "_dues_rcpt", "_eff_month", ym_membership_col] if c]],
         left_on="_pp_txn_key",
         right_on="_ym_ref_key",
         how="left",
@@ -244,61 +280,59 @@ if run_btn:
     deposit_summary["calc_net"] = deposit_summary["tx_gross_sum"].fillna(0) - deposit_summary["tx_fee_sum"].fillna(0)
     deposit_summary["variance_vs_withdrawal"] = deposit_summary["withdrawal_net"].fillna(0) - deposit_summary["calc_net"]
 
-    # --- Build Deferral Schedule for membership dues lines ---
+    # --- Build Deferral Schedule for membership dues lines using Column Z + 12/24 month rules ---
     deferral_rows = []
     if not ppym.empty and ym_alloc_col:
         for _, r in ppym.iterrows():
             alloc = r.get(ym_alloc_col, np.nan)
             if pd.isna(alloc) or alloc == 0:
                 continue
-            dues_paid = r.get("_dues_paid", pd.NaT)
-            mem_str = r.get(ym_membership_col, "")
-            item_desc = str(r.get(ym_item_desc_col, "") or "")
 
+            item_desc = str(r.get(ym_item_desc_col, "") or "")
+            mem_str = r.get(ym_membership_col, "")
+            # membership dues trigger: membership field present AND item description contains "dues"
             is_membership_dues = (isinstance(mem_str, str) and mem_str.strip() != "") and ("dues" in item_desc.lower())
             if not is_membership_dues:
                 continue
 
-            start = service_start_midmonth_rule(dues_paid)
-            # Term inference: if membership mentions "2-year" or "2year" then 24, else 12.
-            term_months = 24 if ("2-year" in str(mem_str).lower() or "2year" in str(mem_str).lower()) else 12
-            months_list = month_span(start, term_months)
-            buckets = split_by_calendar_year(months_list)
-            amounts = allocate_amount_by_buckets(alloc, buckets)
+            mt = infer_member_type(mem_str)
+            eff_month = r.get("_eff_month", pd.NaT)
+            eff_month = pd.to_datetime(eff_month, errors="coerce")
+            months_current = months_left_in_year(eff_month)  # includes eff month
+            term_24 = is_two_year(mem_str)
+            total_months = 24 if term_24 else 12
+
+            # Split months
+            cur_mo = min(months_current, total_months)
+            next_mo = min(12, max(0, total_months - cur_mo))
+            follow_mo = max(0, total_months - cur_mo - next_mo)
+
+            # Allocate by exact month counts (straight-line)
+            per = float(alloc) / float(total_months)
+            amt_cur = round(per * cur_mo, 2)
+            amt_next = round(per * next_mo, 2)
+            amt_follow = round(float(alloc) - amt_cur - amt_next, 2)
 
             deferral_rows.append({
                 "deposit_gid": r.get("_dep_gid", np.nan),
-                "TransactionID": r.get("_pp_txn_key", ""),
+                "TransactionID": r.get("_ym_ref_key", ""),
                 "Membership": mem_str,
                 "Item Description": item_desc,
-                "Dues Paid Date": dues_paid,
-                "Service Start": start,
-                "Term Months": term_months,
-                "Allocation": alloc,
-                "Recognize (Current FY)": amounts["current"],
-                "Defer (Next FY)": amounts["next"],
-                "Defer (Following FY)": amounts["following"],
-                "Revenue Account": REV_MEMBERSHIP_DEFAULT,
-                "Deferred Account": DEF_MEMBERSHIP_DEFAULT,
+                "Receipt Date (col Z)": r.get("_dues_rcpt", pd.NaT),
+                "Effective Month": eff_month,
+                "Term Months": total_months,
+                "Months Current CY": cur_mo,
+                "Months Next (2026)": next_mo,
+                "Months Following (2027)": follow_mo,
+                "Recognize Current (→ 410x)": amt_cur,
+                "Defer 2026 (→ 210x)": amt_next,
+                "Defer 2027 (→ 212x)": amt_follow,
+                "Rev Account (410x)": REV_DUES_BY_TYPE.get(mt, REV_MEMBERSHIP_DEFAULT),
+                "Defer 2026 Acct (210x)": DEFER_210_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_NEXT),
+                "Defer 2027 Acct (212x)": DEFER_212_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_FOLLOW),
             })
 
     deferral_df = pd.DataFrame(deferral_rows)
-
-    # Quick PAC detector: in YM Item Description or GL Code text
-    def is_pac_line(desc: str, gl_code: str) -> bool:
-        d = (desc or "")
-        g = (gl_code or "")
-        return ("pac" in d.lower()) or ("pac" in g.lower()) or ("2202" in g)
-
-    def is_discount(desc: str) -> bool:
-        if desc is None:
-            return False
-        return "discount" in str(desc).lower()
-
-    def is_vat(desc: str) -> bool:
-        if desc is None:
-            return False
-        return "tax" in str(desc).lower() or "vat" in str(desc).lower()
 
     # --- JE Lines (grouped by deposit) ---
     je_rows = []
@@ -320,55 +354,59 @@ if run_btn:
             })
 
     # 2) DR Fees by account per deposit
-    fee_lines = []
     if pp_item_title_col and pp_fee_col:
         fee_tx = pp.loc[(~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp[pp_fee_col].notna())].copy()
         fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
         fee_alloc = fee_tx.groupby(["_dep_gid", "_fee_account"])[pp_fee_col].sum().reset_index()
         for _, r in fee_alloc.iterrows():
-            fee_lines.append({
-                "deposit_gid": int(r["_dep_gid"]),
-                "account": r["_fee_account"],
-                "amount": float(r[pp_fee_col]),
-            })
-    for fr in fee_lines:
-        if fr["amount"] != 0:
+            if float(r[pp_fee_col] or 0) == 0:
+                continue
             je_rows.append({
-                "deposit_gid": int(fr["deposit_gid"]),
+                "deposit_gid": int(r["_dep_gid"]),
                 "date": None,
                 "line_type": "DEBIT",
-                "account": fr["account"],
+                "account": r["_fee_account"],
                 "description": "PayPal Fees by Item Title",
-                "amount": round(fr["amount"], 2),
+                "amount": round(float(r[pp_fee_col]), 2),
                 "source": "PayPal Fees",
             })
 
     # 3) CREDIT side per deposit using YM allocations, with deferral + PAC + VAT + discounts rules
-    # Build a convenience lookup from deferral_df for membership dues portions by TransactionID
-    def_by_txn = {}
+    # Build lookup from deferral_df for membership dues portions by TransactionID
+    def_by_ref = {}
     if not deferral_df.empty:
         for _, r in deferral_df.iterrows():
-            def_by_txn[str(r.get("TransactionID",""))] = {
-                "recognize": float(r.get("Recognize (Current FY)", 0) or 0),
-                "defer_next": float(r.get("Defer (Next FY)", 0) or 0),
-                "defer_follow": float(r.get("Defer (Following FY)", 0) or 0),
-                "rev_acct": r.get("Revenue Account") or REV_MEMBERSHIP_DEFAULT,
-                "def_acct": r.get("Deferred Account") or DEF_MEMBERSHIP_DEFAULT,
-                "deposit_gid": r.get("deposit_gid", np.nan),
+            key = str(r.get("TransactionID",""))
+            def_by_ref[key] = {
+                "recognize": float(r.get("Recognize Current (→ 410x)", 0) or 0),
+                "defer_210": float(r.get("Defer 2026 (→ 210x)", 0) or 0),
+                "defer_212": float(r.get("Defer 2027 (→ 212x)", 0) or 0),
+                "rev_acct": r.get("Rev Account (410x)") or REV_MEMBERSHIP_DEFAULT,
+                "acct_210": r.get("Defer 2026 Acct (210x)") or DEF_MEMBERSHIP_DEFAULT_NEXT,
+                "acct_212": r.get("Defer 2027 Acct (212x)") or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
             }
 
-    # Aggregate YM allocations (excluding discounts); derive PAC, VAT, membership dues, other revenue
+    def is_discount_row(desc: str) -> bool:
+        return is_discount(desc)
+
+    def is_vat_row(desc: str) -> bool:
+        return is_vat(desc)
+
     if not ppym.empty and ym_alloc_col:
         for dep_gid, grp in ppym.groupby("_dep_gid"):
             dep_gid = int(dep_gid) if not pd.isna(dep_gid) else None
-            # Sums
+
             pac_sum = 0.0
             vat_sum = 0.0
-            other_rev_by_acct = {}
+            # membership splits
             mem_recognize = 0.0
-            mem_defer = 0.0
-            mem_rev_acct = REV_MEMBERSHIP_DEFAULT
-            mem_def_acct = DEF_MEMBERSHIP_DEFAULT
+            mem_defer_210 = 0.0
+            mem_defer_212 = 0.0
+            mem_rev_acct = None
+            mem_acct_210 = None
+            mem_acct_212 = None
+
+            other_rev_by_acct = {}
 
             for _, r in grp.dropna(subset=[ym_alloc_col]).iterrows():
                 alloc = float(r.get(ym_alloc_col, 0) or 0)
@@ -378,32 +416,35 @@ if run_btn:
                 gl_code = str(r.get(ym_gl_code_col, "") or "")
                 ref_key = str(r.get("_ym_ref_key",""))
 
-                if is_discount(item_desc):
+                if is_discount_row(item_desc):
                     continue
 
-                if is_pac_line(item_desc, gl_code):
+                if ("pac" in item_desc.lower()) or ("pac" in gl_code.lower()) or ("2202" in gl_code):
                     pac_sum += alloc
                     continue
 
-                if is_vat(item_desc):
+                if is_vat_row(item_desc):
                     vat_sum += alloc
                     continue
 
-                # Membership dues check via deferral lookup
-                if ref_key in def_by_txn:
-                    parts = def_by_txn[ref_key]
+                if ref_key in def_by_ref:
+                    parts = def_by_ref[ref_key]
                     mem_recognize += parts["recognize"]
-                    mem_defer += (parts["defer_next"] + parts["defer_follow"])
+                    mem_defer_210 += parts["defer_210"]
+                    mem_defer_212 += parts["defer_212"]
                     mem_rev_acct = parts["rev_acct"]
-                    mem_def_acct = parts["def_acct"]
+                    mem_acct_210 = parts["acct_210"]
+                    mem_acct_212 = parts["acct_212"]
                 else:
-                    # Non-membership → credit GL Code as-is (YM revenue mapping)
                     acct = gl_code if gl_code else "UNMAPPED · Review"
                     other_rev_by_acct[acct] = other_rev_by_acct.get(acct, 0.0) + alloc
 
             # Emit credits for this deposit
+            if dep_gid is None:
+                continue
+
             # PAC Liability
-            if pac_sum != 0 and dep_gid is not None:
+            if pac_sum != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
                     "date": None,
@@ -415,7 +456,7 @@ if run_btn:
                 })
 
             # VAT Offset Income
-            if vat_sum != 0 and dep_gid is not None:
+            if vat_sum != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
                     "date": None,
@@ -426,33 +467,43 @@ if run_btn:
                     "source": "YM Allocations → VAT",
                 })
 
-            # Membership: immediate revenue (current FY)
-            if mem_recognize != 0 and dep_gid is not None:
+            # Membership pieces
+            if mem_recognize != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
                     "date": None,
                     "line_type": "CREDIT",
-                    "account": mem_rev_acct,
-                    "description": "Membership Dues (current FY recognized)",
+                    "account": mem_rev_acct or REV_MEMBERSHIP_DEFAULT,
+                    "description": "Membership Dues (current-year recognized)",
                     "amount": round(mem_recognize, 2),
                     "source": "Membership Deferral",
                 })
 
-            # Membership: deferred portions (next + following FY) → liability
-            if mem_defer != 0 and dep_gid is not None:
+            if mem_defer_210 != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
                     "date": None,
                     "line_type": "CREDIT",
-                    "account": mem_def_acct,
-                    "description": "Membership Dues (deferred to future FY)",
-                    "amount": round(mem_defer, 2),
+                    "account": mem_acct_210 or DEF_MEMBERSHIP_DEFAULT_NEXT,
+                    "description": "Membership Dues (deferred to 2026)",
+                    "amount": round(mem_defer_210, 2),
+                    "source": "Membership Deferral",
+                })
+
+            if mem_defer_212 != 0:
+                je_rows.append({
+                    "deposit_gid": dep_gid,
+                    "date": None,
+                    "line_type": "CREDIT",
+                    "account": mem_acct_212 or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
+                    "description": "Membership Dues (deferred to 2027)",
+                    "amount": round(mem_defer_212, 2),
                     "source": "Membership Deferral",
                 })
 
             # Other revenue by YM GL code
             for acct, amt in other_rev_by_acct.items():
-                if amt == 0 or dep_gid is None:
+                if amt == 0:
                     continue
                 je_rows.append({
                     "deposit_gid": dep_gid,
@@ -505,10 +556,11 @@ if run_btn:
             ym_item_desc_col: "Item Descriptions",
             ym_gl_code_col: "GL Codes",
             ym_alloc_col: "Allocation",
-            "_dues_paid": "Dues Paid Date",
+            "_dues_rcpt": "Dues Receipt Date (col Z)",
+            "_eff_month": "Effective Receipt Month",
             ym_membership_col: "Membership",
-        })[[c for c in ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Paid Date","Membership"] if c in
-             ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Paid Date","Membership"]]].rename(columns={"_dep_gid":"deposit_gid"}).to_excel(writer, sheet_name="YM Detail (joined)", index=False)
+        })[[c for c in ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership"] if c in
+             ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership"]]].rename(columns={"_dep_gid":"deposit_gid"}).to_excel(writer, sheet_name="YM Detail (joined)", index=False)
         if not deferral_df.empty:
             deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
 
@@ -518,7 +570,7 @@ if run_btn:
     st.download_button(
         label="Download Excel Workbook",
         data=out_buf.getvalue(),
-        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC.xlsx",
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_v5d.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
