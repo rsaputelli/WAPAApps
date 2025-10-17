@@ -1186,6 +1186,30 @@ if run_btn:
             "sum", "calc", "variance"
         ]
         return any(h in name for h in hints)
+# ---- safety: make sure these DataFrames always exist before writing Excel
+if "refunds_df" not in locals():
+    refunds_df = pd.DataFrame()
+
+if "je_out" not in locals():
+    je_out = pd.DataFrame(columns=["deposit_gid","date","account","description","Debit","Credit","source"])
+
+# If consolidated_je wasn't built earlier, compute it now from je_out
+if "consolidated_je" not in locals():
+    if not je_out.empty:
+        _dr = je_out[["account","Debit"]].dropna(subset=["Debit"]).copy()
+        _cr = je_out[["account","Credit"]].dropna(subset=["Credit"]).copy()
+        consolidated_je = (
+            _dr.groupby("account", as_index=True)["Debit"].sum().to_frame()
+              .merge(_cr.groupby("account", as_index=True)["Credit"].sum(), how="outer")
+              .fillna(0.0)
+              .reset_index()
+        )
+        consolidated_je["Debit"]  = consolidated_je["Debit"].astype(float).round(2)
+        consolidated_je["Credit"] = consolidated_je["Credit"].astype(float).round(2)
+        consolidated_je = consolidated_je.loc[~((consolidated_je["Debit"] == 0) & (consolidated_je["Credit"] == 0))].copy()
+        consolidated_je["Memo"] = "Consolidated JE — single multi-line entry"
+    else:
+        consolidated_je = pd.DataFrame(columns=["account","Debit","Credit","Memo"])
 
 out_buf = io.BytesIO()
 
