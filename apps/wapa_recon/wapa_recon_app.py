@@ -324,7 +324,7 @@ if run_btn:
                 continue
             # exclude VAT rows (by text or explicit VAT column or GL 4314)
             vat_amt = float(r.get(ym_vat_col, 0) or 0)
-            if vat_amt != 0 or is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in gl_code.lower()):
+            if vat_amt != 0 or is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower()):
                 continue
 
             # membership dues trigger
@@ -461,7 +461,7 @@ if run_btn:
                 pay_desc  = str(r.get(ym_pay_desc_col, "") or "")
                 gl_code   = str(r.get(ym_gl_code_col, "") or "")
                 ref_key   = str(r.get("_ym_ref_key",""))
-                vat_amt   = float(r.get(ym_vat_col, 0) or 0)
+                vat_amt   = float(r.get(ym_vat_col, 0) or 0) if 'ym_vat_col' in locals() and ym_vat_col else 0.0
 
                 # Ignore discounts
                 if is_discount_text(pay_desc) or is_discount_text(item_desc):
@@ -473,7 +473,7 @@ if run_btn:
                     continue
 
                 # VAT (YM): take either explicit amount or text/GL 4314
-                if (vat_amt != 0) or is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in gl_code.lower()):
+                if (vat_amt != 0) or is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower()):
                     # Prefer explicit vat amount when present, else use alloc
                     vat_sum += (vat_amt if vat_amt != 0 else alloc)
                     continue
