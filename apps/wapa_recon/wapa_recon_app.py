@@ -46,7 +46,7 @@ from PIL import Image
 
 # --- Page setup ---
 st.set_page_config(
-    page_title=""WAPA Recon (JE grouped + Deferrals + PAC + VAT)"",
+    page_title="WAPA Recon (JE grouped + Deferrals + PAC + VAT)",
     page_icon="logo.png",   # Uses the Lutine logo in the browser tab
     layout="wide"
 )
