@@ -8,8 +8,8 @@
 # ✔ 12-mo: current year → 410x; remainder → 210x (2026)
 # ✔ 24-mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
 # ✔ DISCOUNTS ignored via YM Payment Description / Item Description
-# ✔ VAT → 4314 · Offset of Credit Card Trans Fees (stronger detection)
-# ✔ PAC donations → 2202 (robust detection + PAC Detail tab)
+# ✔ VAT → 4314 · Offset of Credit Card Trans Fees (from YM Item Description = "Tax/VAT" or variants; excluded from deferral)
+# ✔ PAC donations → 2202 (YM GL/text + PayPal-only Source/Description when not matched to YM)
 
 import io
 import re
@@ -95,7 +95,7 @@ def find_col(df, candidates):
     # contains/fuzzy
     for col in df.columns:
         for cand in candidates:
-            if cand in col:
+            if cand.lower() in col.lower():
                 return col
     return None
 
@@ -146,8 +146,13 @@ def is_discount_text(s: str) -> bool:
     return "discount" in str(s or "").lower()
 
 def is_vat_text(s: str) -> bool:
-    d = str(s or "").lower()
-    # cover variations: tax, vat, cc fee offset, processing fee offset
+    d_raw = str(s or "").strip()
+    d = d_raw.lower()
+    nt = re.sub(r"[^a-z0-9]", "", d)
+    # Primary: "Tax/VAT" exact or punctuation-equivalent
+    if d_raw.upper() == "TAX/VAT" or d == "tax/vat" or nt in {"taxvat","vattax"}:
+        return True
+    # Secondary: common variants
     return ("tax" in d) or ("vat" in d) or ("cc fee offset" in d) or ("credit card fee offset" in d) or ("processing fee offset" in d)
 
 def is_pac_text(s: str) -> bool:
@@ -166,8 +171,9 @@ st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals (12/24 mo) + PA
 st.markdown("""
 Upload CSVs (any column order is OK; headers auto-detected):
 
-- **PayPal**: Type, Gross, Fee, Net, Transaction ID, Item Title
-- **YM Export**: Invoice/Reference, Item Description, GL Code, Allocation, **Member/Non-Member - Date Last Dues Transaction** (col Z), **Payment Description**, Membership
+- **PayPal**: Type, Gross, Fee, Net, Transaction ID, Item Title, Source/Description (if present)
+- **YM Export**: Invoice/Reference, Item Description (N), GL Code (O), Allocation (Q),
+                **Member/Non-Member - Date Last Dues Transaction** (Z), **Payment Description**, Membership
 - **Bank (TD)**: Date, Description, Deposit/Credit/Amount
 
 **Deferral logic**
@@ -177,7 +183,7 @@ Upload CSVs (any column order is OK; headers auto-detected):
 - 24-month: current-year months recognized; **12 months → 210x (2026)**; remaining months → **212x (2027)**
 - **Discount** rows ignored (via Payment Description / Item Description).
 - **PAC** donations credited to **2202 · Due to WAPA PAC**.
-- **VAT / CC fee offset** credited to **4314 · Offset of Credit Card Trans Fees**.
+- **VAT / CC fee offset** credited to **4314 · Offset of Credit Card Trans Fees** (YM Item Description "Tax/VAT").
 """)
 
 pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
@@ -204,6 +210,7 @@ if run_btn:
     pp_txn_col        = find_col(pp, ["transaction_id", "transactionid", "txn_id"])
     pp_date_col       = find_col(pp, ["date", "date_time", "time", "transaction_initiation_date"])
     pp_item_title_col = find_col(pp, ["item_title", "item_name", "title", "product_name"])
+    pp_src_col        = find_col(pp, ["source", "note", "description", "memo", "name"])
 
     for col in [pp_gross_col, pp_fee_col, pp_net_col]:
         if col and pp[col].dtype == object:
@@ -263,6 +270,9 @@ if run_btn:
         how="left",
         suffixes=("", "_ym"),
     )
+
+    # track YM-matched PP txns for PayPal-only PAC detection
+    matched_txns = set(ppym["_pp_txn_key"].dropna().astype(str).unique())
 
     # --- Aggregations per deposit ---
     tx_sums = (
@@ -358,7 +368,6 @@ if run_btn:
 
     # --- JE Lines (grouped by deposit) ---
     je_rows = []
-    pac_detail_rows = []  # for a PAC detail tab
 
     # 1) DR Bank per deposit
     for _, row in deposit_summary.reset_index().rename(columns={"_dep_gid":"deposit_gid"}).iterrows():
@@ -460,7 +469,7 @@ if run_btn:
                     pac_sum += alloc
                     continue
 
-                # VAT Offset (detect by text or GL 4314)
+                # VAT Offset (by description or GL 4314)
                 if is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower()):
                     vat_sum += alloc
                     continue
@@ -555,6 +564,43 @@ if run_btn:
                     "source": "YM Allocations",
                 })
 
+    # 4) PAC donations that appear only in PayPal (not in YM)
+    if pp_src_col or pp_item_title_col:
+        # Build a text field concatenating available PP text columns
+        pp_text_cols = [c for c in [pp_src_col, pp_item_title_col, pp_date_col] if c]
+        if pp_txn_col:
+            pp["_pp_txn_key"] = pp[pp_txn_col].astype(str).str.strip()
+        else:
+            pp["_pp_txn_key"] = ""
+        pac_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna())
+        if matched_txns:
+            pac_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
+        if pp_text_cols:
+            text_any = pp[pp_text_cols[0]].astype(str)
+            for c in pp_text_cols[1:]:
+                text_any = text_any.str.cat(pp[c].astype(str), sep=" | ")
+            pp["_pp_pac_text"] = text_any.str.contains("pac|political action|wapa pac", case=False, na=False)
+            pac_only = pp.loc[pac_mask & pp["_pp_pac_text"]].copy()
+            if not pac_only.empty and pp_gross_col in pac_only.columns:
+                pac_add = (
+                    pac_only.groupby("_dep_gid")[pp_gross_col]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={pp_gross_col: "pac_amt"})
+                )
+                for _, r in pac_add.iterrows():
+                    if float(r["pac_amt"] or 0) == 0:
+                        continue
+                    je_rows.append({
+                        "deposit_gid": int(r["_dep_gid"]),
+                        "date": None,
+                        "line_type": "CREDIT",
+                        "account": PAC_LIABILITY,
+                        "description": "PAC Donation (PayPal direct)",
+                        "amount": round(float(r["pac_amt"]), 2),
+                        "source": "PayPal PAC (unlinked)",
+                    })
+
     je_df = pd.DataFrame(je_rows)
 
     # Optional auto-balance per deposit
@@ -633,7 +679,7 @@ if run_btn:
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
 
         # Detail tabs for review
-        ppym.rename(columns={
+        _ym_detail = ppym.rename(columns={
             "_pp_txn_key": "TransactionID",
             ym_item_desc_col: "Item Descriptions",
             ym_gl_code_col: "GL Codes",
@@ -642,8 +688,13 @@ if run_btn:
             "_eff_month": "Effective Receipt Month",
             ym_membership_col: "Membership",
             ym_pay_desc_col: "Payment Description",
-        })[[c for c in ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"] if c in
-             ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"]]].rename(columns={"_dep_gid":"deposit_gid"}).to_excel(writer, sheet_name="YM Detail (joined)", index=False)
+        })
+        _ym_cols = ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid",
+                    "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"]
+        _ym_cols = [c for c in _ym_cols if c in _ym_detail.columns]
+        _ym_detail = _ym_detail[_ym_cols].rename(columns={"_dep_gid": "deposit_gid"})
+        _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
+
         if not deferral_df.empty:
             deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
 
