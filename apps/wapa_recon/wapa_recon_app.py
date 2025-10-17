@@ -317,8 +317,10 @@ if run_btn:
         (pp["_dep_gid"].notna()) &
         (pp["_wd_in_selected_month"]) &
         (pd.to_datetime(pp["_parsed_date"], errors="coerce").between(window_start, window_end))
-    )
-
+    ).fillna(False).astype(bool)
+    assert isinstance(pp["_child_in_window"], pd.Series)
+    assert pp["_child_in_window"].dtype == bool
+    
     transactions = pp.loc[pp["_child_in_window"]].copy()
 
     # --- Link PP transactions to YM by TransactionID ↔ Reference
@@ -469,8 +471,10 @@ if run_btn:
         (pp["_dep_gid"].notna()) &
         (pp["_wd_in_selected_month"]) &
         (pd.to_datetime(pp["_parsed_date"], errors="coerce").between(window_start, window_end))
-    )
-
+    ).fillna(False).astype(bool)
+    assert isinstance(pp["_child_in_window"], pd.Series)
+    assert pp["_child_in_window"].dtype == bool
+    
     transactions = pp.loc[pp["_child_in_window"]].copy()
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
