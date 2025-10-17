@@ -357,9 +357,11 @@ if run_btn:
     if pp_item_title_col and pp_fee_col:
         fee_tx = pp.loc[(~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp[pp_fee_col].notna())].copy()
         fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
-        fee_alloc = fee_tx.groupby(["_dep_gid", "_fee_account"])[pp_fee_col].sum().reset_index()
+        # make fees positive for debit lines
+        fee_tx["_fee_amt_pos"] = fee_tx[pp_fee_col].abs()
+        fee_alloc = fee_tx.groupby(["_dep_gid", "_fee_account"])["_fee_amt_pos"].sum().reset_index()
         for _, r in fee_alloc.iterrows():
-            if float(r[pp_fee_col] or 0) == 0:
+            if float(r["_fee_amt_pos"] or 0) == 0:
                 continue
             je_rows.append({
                 "deposit_gid": int(r["_dep_gid"]),
@@ -516,6 +518,33 @@ if run_btn:
                 })
 
     je_df = pd.DataFrame(je_rows)
+
+    # --- Final per-deposit balancing line (to ensure each deposit batch is in-balance)
+    # Posts any small residuals to a review account so exports can be imported cleanly.
+    RECON_VARIANCE_ACCT = "9999 · Recon Variance (Review)"
+    for dep_gid, sub in je_df.groupby("deposit_gid"):
+        deb = float(sub.loc[sub["line_type"]=="DEBIT","amount"].sum() or 0.0)
+        cred = float(sub.loc[sub["line_type"]=="CREDIT","amount"].sum() or 0.0)
+        diff = round(deb - cred, 2)
+        if abs(diff) >= 0.01:
+            # if debits > credits, we need a CREDIT; else a DEBIT
+            line_type = "CREDIT" if diff > 0 else "DEBIT"
+            je_df.loc[len(je_df)] = {
+                "deposit_gid": dep_gid,
+                "date": None,
+                "line_type": line_type,
+                "account": RECON_VARIANCE_ACCT,
+                "description": "Auto balance to zero (review)",
+                "amount": abs(diff),
+                "source": "Auto Balance",
+            }
+
+    # Sort for readability: deposit_gid asc, DEBIT before CREDIT
+    je_df['line_order'] = je_df['line_type'].map({'DEBIT':0,'CREDIT':1}).fillna(2)
+    je_df = je_df.sort_values(['deposit_gid','line_order','account']).drop(columns=['line_order'])
+    # Sort for readability: deposit_gid asc, DEBIT before CREDIT
+    je_df['line_order'] = je_df['line_type'].map({'DEBIT':0,'CREDIT':1}).fillna(2)
+    je_df = je_df.sort_values(['deposit_gid','line_order','account']).drop(columns=['line_order'])
 
     # Balance check per deposit
     checks = []
