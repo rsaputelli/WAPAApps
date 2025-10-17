@@ -46,7 +46,7 @@ from PIL import Image
 
 # --- Page setup ---
 st.set_page_config(
-    page_title="WAPA Recon (JE grouped + Deferrals + PAC + VAT)",
+    
     page_icon="logo.png",   # Uses the Lutine logo in the browser tab
     layout="wide"
 )
@@ -55,9 +55,9 @@ st.set_page_config(
 logo = Image.open("logo.png")
 col1, col2 = st.columns([1, 5])
 with col1:
-    st.image(logo, width=70)
+    st.image(logo, width=300)
 with col2:
-    st.markdown("<h1 style='padding-top: 10px;'>WAPA Reconciliation</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='padding-top: 10px;'>WAPA Recon (JE grouped + Deferrals + PAC + VAT)</h1>", unsafe_allow_html=True)
 
 
 # ------------------------- Config -------------------------
