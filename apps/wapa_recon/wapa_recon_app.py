@@ -1136,9 +1136,11 @@ if run_btn:
             st.dataframe(deferral_df.head(200))
 
 
-# Write to file
-out_path = "/mnt/data/wapa_recon_app_v5c_fixed.py"
-with open(out_path, "w", encoding="utf-8") as f:
-    f.write(updated_code)
+    # out_buf already contains the XLSX
+    st.download_button(
+        label="Download Excel Workbook",
+        data=out_buf.getvalue(),
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-out_path
