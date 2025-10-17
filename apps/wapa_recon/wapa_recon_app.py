@@ -290,6 +290,17 @@ default_month_start = pd.Timestamp(year=today.year, month=today.month, day=1)
 recon_anchor = st.date_input(
     "Reconcile month (pick any day IN the month)",
     value=default_month_start.date()
+
+# --- Build dynamic output filename based on END of selected month ---
+
+from datetime import timedelta
+
+_next = (recon_anchor.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+_last = _next - timedelta(days=1)
+
+out_filename = f"{_last.strftime('%Y.%m.%d')} WAPA PayPal and YM Recon.xlsx"
+
 )
 lead_bleed_days  = st.number_input("Include days BEFORE month start (front bleed)", min_value=0, max_value=31, value=0, step=1)
 trail_bleed_days = st.number_input("Include days AFTER month end (back bleed)",   min_value=0, max_value=31, value=0, step=1)
@@ -1463,6 +1474,75 @@ if run_btn:
 
         consolidated_je.to_excel(writer, sheet_name="Consolidated JE (Single Entry)", index=False)
 
+
+        # --- Excel-formula TOTALS for Consolidated JE (Single Entry) and JE Balance Check ---
+
+        def _col_letter(i: int) -> str:
+
+            s = ""
+
+            i += 1
+
+            while i:
+
+                i, r = divmod(i - 1, 26)
+
+                s = chr(65 + r) + s
+
+            return s
+
+        
+
+        ws_cje = writer.sheets.get("Consolidated JE (Single Entry)")
+
+        if ws_cje is not None and 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
+
+            _n = len(consolidated_je)
+
+            ws_cje.write(_n + 1, 0, "TOTAL")
+
+            for _name in ["Debit", "Credit"]:
+
+                if _name in consolidated_je.columns:
+
+                    _c = consolidated_je.columns.get_loc(_name)
+
+                    _L = _col_letter(_c)
+
+                    ws_cje.write_formula(_n + 1, _c, "=SUM(" + _L + "2:" + _L + str(_n+1) + ")")
+
+        
+
+        ws_bal = writer.sheets.get("JE Balance Check")
+
+        if ws_bal is not None and 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
+
+            _n = len(balance_df)
+
+            ws_bal.write(_n + 1, 0, "TOTAL")
+
+            for _name in ["Debits", "Credits"]:
+
+                if _name in balance_df.columns:
+
+                    _c = balance_df.columns.get_loc(_name)
+
+                    _L = _col_letter(_c)
+
+                    ws_bal.write_formula(_n + 1, _c, "=SUM(" + _L + "2:" + _L + str(_n+1) + ")")
+
+            if all(c in balance_df.columns for c in ["Debits", "Credits", "Diff"]):
+
+                _d = balance_df.columns.get_loc("Debits")
+
+                _c = balance_df.columns.get_loc("Credits")
+
+                _diff = balance_df.columns.get_loc("Diff")
+
+                _dL, _cL = _col_letter(_d), _col_letter(_c)
+
+                ws_bal.write_formula(_n + 1, _diff, "=" + _dL + str(_n+2) + "-" + _cL + str(_n+2))
+
         # ---- existing tabs ----
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
@@ -1539,7 +1619,7 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
     st.download_button(
         label="Download Excel Workbook",
         data=st.session_state.xlsx_bytes,
-        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
+        file_name=out_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_xlsx"
     )
@@ -1601,16 +1681,7 @@ except Exception as _e:
     wb = writer.book
 
     # Consolidated JE or JE Lines (Grouped by Deposit)
-    for sheet_name in ["Consolidated JE", "JE Lines (Grouped by Deposit)"]:
-        ws = writer.sheets.get(sheet_name)
-        if ws is not None and 'consolidated_je' in locals() and not consolidated_je.empty:
-            last_row = len(consolidated_je) + 1
-            ws.write(last_row, 0, "TOTAL")
-            for col_name in ["Debit", "Credit"]:
-                if col_name in consolidated_je.columns:
-                    cidx = consolidated_je.columns.get_loc(col_name)
-                    colL = _col_letter(cidx)
-                    ws.write_formula(last_row, cidx, f"=SUM({colL}2:{colL}{last_row})")
+    # [removed outdated totals formula block]
 
     # JE Balance Check totals
     ws = writer.sheets.get("JE Balance Check")
