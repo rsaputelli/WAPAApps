@@ -1,15 +1,17 @@
-
 # wapa_recon_app.py
 # Streamlit app for WAPA PayPal ↔ YM ↔ Bank reconciliation
-# ✔ JE Lines grouped by deposit (deposit_gid), DEBITs first
-# ✔ Split Debit / Credit columns in export
-# ✔ PayPal Fees posted as positive debits (robust to missing cols)
-# ✔ Membership deferrals using YM Column Z + mid-month rule
-# ✔ 12-mo: current year → 410x; remainder → 210x (2026)
-# ✔ 24-mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
-# ✔ DISCOUNTS ignored via YM Payment Description / Item Description
-# ✔ VAT → 4314 · Offset of Credit Card Trans Fees (detects YM "Payment Allocation (Year-to-Date) - Item Description" = Tax/VAT; excluded from deferral)
-# ✔ PAC donations → 2202 (YM GL/text + PayPal-only Source/Description when not matched to YM)
+# Features:
+# - JE Lines grouped by deposit (deposit_gid), DEBITs first
+# - Split Debit / Credit columns in export
+# - PayPal Fees posted as positive debits (robust to missing cols)
+# - Membership deferrals using YM Column Z + mid-month rule
+# - 12/24-month deferral logic
+# - DISCOUNTS ignored via YM Payment Description / Item Description
+# - VAT → 4314 (detects YM "Payment Allocation (Year-to-Date) - Item Description" = Tax/VAT; excluded from deferral)
+# - PAC donations → 2202 (YM GL/text + PayPal-only Item Title when not matched to YM)
+# - PayPal-only Invoice Payments → 99999 (placeholder, flagged for manual coding)
+# - YM Payment Date normalization & period filter (prevents next-month bleed)
+# - Excel: all money columns formatted as currency (2 decimals)
 
 import io
 import re
@@ -41,7 +43,6 @@ REV_DUES_BY_TYPE = {
 REV_MEMBERSHIP_DEFAULT = "4100 · Membership Dues"
 
 # Deferred (liability) account names by membership type
-# 210x -> Next FY (labels 2026)
 DEFER_210_BY_TYPE = {
     "fellow":       "2101 · Deferred Dues - Fellow 2026",
     "member":       "2102 · Deferred Dues - Member 2026",
@@ -51,7 +52,6 @@ DEFER_210_BY_TYPE = {
     "sustaining":   "2106 · Deferred Dues - Sustaining 2026",
     "hardship":     "2107 · Deferred Dues - Hardship 2026",
 }
-# 212x -> Following FY (labels 2027)
 DEFER_212_BY_TYPE = {
     "fellow":       "2125 · Deferred Dues - Fellow 2027",
     "member":       "2126 · Deferred Dues - Member 2027",
@@ -61,11 +61,12 @@ DEFER_212_BY_TYPE = {
     "sustaining":   "2130 · Deferred Dues - Sustaining 2027",
     "hardship":     "2131 · Deferred Dues - Hardship 2027",
 }
-DEF_MEMBERSHIP_DEFAULT_NEXT = "2100 · Deferred Dues (Next FY)"
+DEF_MEMBERSHIP_DEFAULT_NEXT   = "2100 · Deferred Dues (Next FY)"
 DEF_MEMBERSHIP_DEFAULT_FOLLOW = "2100 · Deferred Dues (Following FY)"
 
 PAC_LIABILITY          = "2202 · Due to WAPA PAC"
 VAT_OFFSET_INCOME      = "4314 · Offset of Credit Card Trans Fees"
+UNMAPPED_REVIEW_ACCT   = "99999 · Needs Coding (Review)"
 
 # ------------------------- Helpers -------------------------
 def norm_text(s: str) -> str:
@@ -88,11 +89,9 @@ def normalize_cols(df):
     return df
 
 def find_col(df, candidates):
-    # exact
     for c in candidates:
         if c in df.columns:
             return c
-    # contains/fuzzy
     for col in df.columns:
         for cand in candidates:
             if cand.lower() in col.lower():
@@ -116,7 +115,6 @@ def choose_fee_account_from_item_title(item_title: str) -> str:
     return FEE_ACCT_OTHER
 
 def effective_receipt_month(d: pd.Timestamp) -> pd.Timestamp:
-    """Mid-month rule: <=15 use same month; >15 shift to next month start."""
     if pd.isna(d):
         return pd.NaT
     if d.day <= 15:
@@ -126,7 +124,6 @@ def effective_receipt_month(d: pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(year=y, month=m, day=1)
 
 def months_left_in_year(start_month: pd.Timestamp) -> int:
-    """Number of months including start_month through December."""
     if pd.isna(start_month):
         return 0
     return 12 - start_month.month + 1
@@ -149,10 +146,8 @@ def is_vat_text(s: str) -> bool:
     d_raw = str(s or "").strip()
     d = d_raw.lower()
     nt = re.sub(r"[^a-z0-9]", "", d)
-    # Primary: exact "Tax/VAT" or punctuation-equivalent
     if d_raw.upper() in {"TAX/VAT", "TAX / VAT", "TAX VAT"} or nt in {"taxvat","vattax"}:
         return True
-    # Secondary: common variants
     return ("tax" in d) or ("vat" in d) or ("cc fee offset" in d) or ("credit card fee offset" in d) or ("processing fee offset" in d)
 
 def is_pac_text(s: str) -> bool:
@@ -166,24 +161,16 @@ def is_pac_line(item_desc: str, gl_code: str, payment_desc: str) -> bool:
     return is_pac_text(item_desc) or is_pac_text(payment_desc) or ("pac" in g)
 
 # ------------------------- UI -------------------------
-st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals (12/24 mo) + PAC + VAT")
+st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals + PAC + VAT")
 
 st.markdown("""
 Upload CSVs (any column order is OK; headers auto-detected):
 
 - **PayPal**: Type, Gross, Fee, Net, Transaction ID, Item Title, Source/Description (if present)
 - **YM Export**: Invoice/Reference, Item Description (N), GL Code (O), Allocation (Q),
-                **Member/Non-Member - Date Last Dues Transaction** (Z), **Payment Description**, Membership
+                **Member/Non-Member - Date Last Dues Transaction** (Z), **Payment Description**, Membership,
+                **Payment Allocation (YTD) - Item Description**, **Payment Date** (any grouping)
 - **Bank (TD)**: Date, Description, Deposit/Credit/Amount
-
-**Deferral logic**
-- Date source: YM **col Z** (Member/Non-Member - Date Last Dues Transaction)
-- Mid-month rule: payments on or before the 15th count in that month; after the 15th → next month
-- 12-month: current-year months recognized; remainder → **210x (labeled 2026)** by member type
-- 24-month: current-year months recognized; **12 months → 210x (2026)**; remaining months → **212x (2027)**
-- **Discount** rows ignored (via Payment Description / Item Description).
-- **PAC** donations credited to **2202 · Due to WAPA PAC**.
-- **VAT / CC fee offset** credited to **4314 · Offset of Credit Card Trans Fees** (YM Allocation Item Desc "Tax/VAT").
 """)
 
 pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
@@ -240,18 +227,17 @@ if run_btn:
     pp.loc[pp.index.isin(withdrawal_positions), "_dep_gid"] = range(len(withdrawal_positions))
 
     withdrawals = pp.loc[pp["_is_withdrawal"]].copy()
-    transactions = pp.loc[(~pp["_is_withdrawal"]) & (~pp["_dep_gid"].isna())].copy()
 
     # --- YM columns ---
     ym_ref_col        = find_col(ym, ["invoice_-_reference_number", "invoice_reference_number", "reference_number", "invoice"])
-    ym_item_desc_col  = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])  # N (legacy)
-    ym_gl_code_col    = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                 # O
-    ym_alloc_col      = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])               # Q
+    ym_item_desc_col  = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])   # N (legacy)
+    ym_gl_code_col    = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                # O
+    ym_alloc_col      = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])              # Q
     ym_dues_rcpt_col  = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
-    ym_membership_col = find_col(ym, ["membership", "membership_type"])  # AC
+    ym_membership_col = find_col(ym, ["membership", "membership_type"])                                       # AC
     ym_pay_desc_col   = find_col(ym, ["payment_description", "payment_descriptions", "payment_desc", "ym_payment_description"])
 
-    # ✨ NEW: YM Column N that actually carries "Tax/VAT" description
+    # Allocation Item Description (for VAT flagging)
     ym_alloc_item_desc_col = find_col(ym, [
         "payment_allocation_(year-to-date)_-_item_description",
         "payment_allocation_-_item_description",
@@ -261,13 +247,54 @@ if run_btn:
         "allocation_item_description",
     ])
 
+    # NEW: normalize YM Payment Date (covers multiple export layouts)
+    ym_pay_date_col = find_col(ym, [
+        "payment_allocation_(year-to-date)_-_payment_date",
+        "payment_allocation_-_payment_date",
+        "payment_allocation_payment_date",
+        "invoice_-_payment_date",
+        "invoice_payment_date",
+        "payment_date"
+    ])
+    ym["_ym_pay_date"] = pd.to_datetime(ym[ym_pay_date_col], errors="coerce") if ym_pay_date_col else pd.NaT
+
     if ym_alloc_col and ym[ym_alloc_col].dtype == object:
         ym[ym_alloc_col] = to_float(ym[ym_alloc_col])
 
     ym["_dues_rcpt"]  = pd.to_datetime(ym[ym_dues_rcpt_col], errors="coerce") if ym_dues_rcpt_col else pd.NaT
     ym["_eff_month"]  = ym["_dues_rcpt"].apply(effective_receipt_month)
 
-    # Link PP transactions to YM by TransactionID ↔ Reference
+    # --- Derive recon month from PayPal withdrawals (mode month) ---
+    wd_dates = pd.to_datetime(withdrawals[pp_date_col], errors="coerce")
+    wd_months = wd_dates.dt.to_period("M").dropna()
+    if not wd_months.empty:
+        recon_period = wd_months.mode()[0]
+        recon_start = recon_period.to_timestamp(how="start")
+        recon_end   = recon_period.to_timestamp(how="end")
+    else:
+        any_pp_date = pd.to_datetime(pp[pp_date_col], errors="coerce").dt.to_period("M").dropna()
+        if not any_pp_date.empty:
+            recon_period = any_pp_date.mode()[0]
+            recon_start = recon_period.to_timestamp(how="start")
+            recon_end   = recon_period.to_timestamp(how="end")
+        else:
+            recon_start = pd.Timestamp.min
+            recon_end   = pd.Timestamp.max
+
+    # --- Exclude YM rows outside recon month (prevents next-month credits/refunds bleed) ---
+    if ym_pay_date_col:
+        ym = ym.loc[ym["_ym_pay_date"].between(recon_start, recon_end)].copy()
+
+    # --- Prepare PayPal transactions subset (same-month as their withdrawal) ---
+    pp["_month"] = pp["_parsed_date"].dt.to_period("M")
+    wd_month = pp.loc[pp["_is_withdrawal"], ["_dep_gid","_month"]].set_index("_dep_gid")["_month"].to_dict()
+    pp["_same_dep_month"] = pp.apply(
+        lambda r: (not r["_is_withdrawal"]) and pd.notna(r["_dep_gid"]) and (r["_month"] == wd_month.get(r["_dep_gid"])),
+        axis=1
+    )
+    transactions = pp.loc[pp["_same_dep_month"]].copy()
+
+    # --- Link PP transactions to YM by TransactionID ↔ Reference
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
@@ -284,7 +311,6 @@ if run_btn:
         suffixes=("", "_ym"),
     )
 
-    # track YM-matched PP txns for PayPal-only PAC detection
     # TRUE matches only: intersection of PP Txn IDs and YM Ref IDs
     pp_keys = set(transactions["_pp_txn_key"].dropna().astype(str))
     ym_keys = set(ym["_ym_ref_key"].dropna().astype(str))
@@ -315,12 +341,12 @@ if run_btn:
     deposit_summary["calc_net"] = deposit_summary["tx_gross_sum"].fillna(0) - deposit_summary["tx_fee_sum"].fillna(0)
     deposit_summary["variance_vs_withdrawal"] = deposit_summary["withdrawal_net"].fillna(0) - deposit_summary["calc_net"]
 
-    # --- Build Deferral Schedule for membership dues lines using Column Z + 12/24 month rules ---
+    # --- Build Deferral Schedule
     deferral_rows = []
     if not ppym.empty and ym_alloc_col:
         for _, r in ppym.iterrows():
             alloc = r.get(ym_alloc_col, np.nan)
-            if pd.isna(alloc) or alloc == 0:
+            if pd.isna(alloc) or float(alloc) == 0:
                 continue
 
             item_desc = str(r.get(ym_item_desc_col, "") or "")
@@ -329,13 +355,10 @@ if run_btn:
             mem_str   = r.get(ym_membership_col, "")
             alloc_item_desc = str(r.get(ym_alloc_item_desc_col, "") or "")
 
-            # ignore discounts outright
             if is_discount_text(pay_desc) or is_discount_text(item_desc):
                 continue
-            # exclude PAC rows
             if is_pac_line(item_desc, gl_code, pay_desc):
                 continue
-            # exclude VAT/fee-offset rows from deferral (including Allocation Item Desc text)
             _vat_gate = (
                 is_vat_text(item_desc) or is_vat_text(pay_desc) or
                 is_vat_text(alloc_item_desc) or ("4314" in str(gl_code).lower())
@@ -343,26 +366,31 @@ if run_btn:
             if _vat_gate:
                 continue
 
-            # membership dues trigger: membership present AND item description mentions "dues"
             is_membership_dues = (isinstance(mem_str, str) and mem_str.strip() != "") and ("dues" in item_desc.lower())
+            if not is_membership_dues and (isinstance(mem_str, str) and mem_str.strip() != "") and gl_code.strip().startswith("410"):
+                is_membership_dues = True
+
             if not is_membership_dues:
                 continue
 
+            eff_month = pd.to_datetime(r.get("_eff_month", pd.NaT), errors="coerce")
+            if pd.isna(eff_month):
+                # last resorts if needed
+                eff_month = pd.to_datetime(r.get("_dues_rcpt", pd.NaT), errors="coerce")
+            if pd.isna(eff_month):
+                eff_month = pd.NaT
+
             mt = infer_member_type(mem_str)
-            eff_month = r.get("_eff_month", pd.NaT)
-            eff_month = pd.to_datetime(eff_month, errors="coerce")
-            months_current = months_left_in_year(eff_month)  # includes eff month
+            months_current = months_left_in_year(eff_month)
             total_months = 24 if is_two_year(mem_str) else 12
 
-            # Split months
-            cur_mo = min(months_current, total_months)
-            next_mo = min(12, max(0, total_months - cur_mo))
-            follow_mo = max(0, total_months - cur_mo - next_mo)
+            cur_mo   = min(months_current, total_months)
+            next_mo  = min(12, max(0, total_months - cur_mo))
+            follow_mo= max(0, total_months - cur_mo - next_mo)
 
-            # Allocate by exact month counts (straight-line)
             per = float(alloc) / float(total_months)
-            amt_cur = round(per * cur_mo, 2)
-            amt_next = round(per * next_mo, 2)
+            amt_cur    = round(per * cur_mo, 2)
+            amt_next   = round(per * next_mo, 2)
             amt_follow = round(float(alloc) - amt_cur - amt_next, 2)
 
             deferral_rows.append({
@@ -406,7 +434,7 @@ if run_btn:
                 "source": "Withdrawal",
             })
 
-    # 2) DR Fees by account per deposit  (robust & positive)
+    # 2) DR Fees by account per deposit (positive)
     if (
         "pp_item_title_col" in locals() and "pp_fee_col" in locals() and
         pp_item_title_col and pp_fee_col and
@@ -415,11 +443,12 @@ if run_btn:
         fee_tx = pp.loc[
             (~pp["_is_withdrawal"]) &
             (pp["_dep_gid"].notna()) &
-            (pp[pp_fee_col].notna())
+            (pp[pp_fee_col].notna()) &
+            (pp["_same_dep_month"])
         ].copy()
 
         fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
-        fee_tx["_fee_amt_pos"] = fee_tx[pp_fee_col].abs()  # positive for debit lines
+        fee_tx["_fee_amt_pos"] = fee_tx[pp_fee_col].abs()
 
         fee_alloc = (
             fee_tx.groupby(["_dep_gid", "_fee_account"])["_fee_amt_pos"]
@@ -441,8 +470,7 @@ if run_btn:
                 "source": "PayPal Fees",
             })
 
-    # 3) CREDIT side per deposit using YM allocations, with deferral + PAC + VAT + discounts rules
-    # Build lookup from deferral_df for membership dues portions by TransactionID
+    # 3) CREDIT side per deposit using YM allocations (+ deferral + PAC + VAT + discounts)
     def_by_ref = {}
     if not deferral_df.empty:
         for _, r in deferral_df.iterrows():
@@ -462,14 +490,12 @@ if run_btn:
 
             pac_sum = 0.0
             vat_sum = 0.0
-            # membership splits
             mem_recognize = 0.0
             mem_defer_210 = 0.0
             mem_defer_212 = 0.0
             mem_rev_acct = None
             mem_acct_210 = None
             mem_acct_212 = None
-
             other_rev_by_acct = {}
 
             for _, r in grp.dropna(subset=[ym_alloc_col]).iterrows():
@@ -482,16 +508,13 @@ if run_btn:
                 ref_key   = str(r.get("_ym_ref_key",""))
                 alloc_item_desc = str(r.get(ym_alloc_item_desc_col, "") or "")
 
-                # Ignore discounts
                 if is_discount_text(pay_desc) or is_discount_text(item_desc):
                     continue
 
-                # PAC
                 if is_pac_line(item_desc, gl_code, pay_desc):
                     pac_sum += alloc
                     continue
 
-                # VAT Offset (by Allocation Item Desc 'Tax/VAT', item/pay desc, or GL 4314)
                 if (
                     is_vat_text(item_desc) or is_vat_text(pay_desc) or
                     is_vat_text(alloc_item_desc) or ("4314" in str(gl_code).lower())
@@ -499,7 +522,6 @@ if run_btn:
                     vat_sum += alloc
                     continue
 
-                # Membership deferral portions
                 if ref_key in def_by_ref:
                     parts = def_by_ref[ref_key]
                     mem_recognize += parts["recognize"]
@@ -509,15 +531,15 @@ if run_btn:
                     mem_acct_210 = parts["acct_210"]
                     mem_acct_212 = parts["acct_212"]
                 else:
-                    # Other revenue by YM GL code
-                    acct = gl_code if gl_code else "UNMAPPED · Review"
+                    acct = str(gl_code).strip()
+                    if acct.lower() in {"", "nan", "none"}:
+                        # simple fallback: bucket for review
+                        acct = "UNMAPPED · Review"
                     other_rev_by_acct[acct] = other_rev_by_acct.get(acct, 0.0) + alloc
 
-            # Emit credits for this deposit
             if dep_gid is None:
                 continue
 
-            # PAC Liability
             if pac_sum != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
@@ -529,7 +551,6 @@ if run_btn:
                     "source": "YM Allocations → PAC",
                 })
 
-            # VAT Offset Income
             if vat_sum != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
@@ -541,7 +562,6 @@ if run_btn:
                     "source": "YM Allocations",
                 })
 
-            # Membership pieces
             if mem_recognize != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
@@ -575,7 +595,6 @@ if run_btn:
                     "source": "Membership Deferral",
                 })
 
-            # Other revenue by YM GL code
             for acct, amt in other_rev_by_acct.items():
                 if amt == 0:
                     continue
@@ -590,53 +609,36 @@ if run_btn:
                 })
 
     # 4) PAC donations that appear only in PayPal (not in YM) — normalize Item Title (Col O)
-    # Catches patterns like "Online+Donation+(WAPA+PAC)" and avoids double-counting if the PP txn already matched YM.
-    import re
-    
-    # Find the item title column (normalized headers -> "item_title")
-    item_title_col = None
-    if 'pp_item_title_col' in locals() and pp_item_title_col and pp_item_title_col in pp.columns:
-        item_title_col = pp_item_title_col
-    else:
-        for c in pp.columns:
-            if str(c).strip().lower() == "item_title":
-                item_title_col = c
-                break
-    
-    # Build PP txn key for exclusion of already-matched YM rows
+    # Catches "Online+Donation+(WAPA+PAC)" etc., avoids double-counting.
+    item_title_col = pp_item_title_col
     if pp_txn_col and pp_txn_col in pp.columns:
         pp["_pp_txn_key"] = pp[pp_txn_col].astype(str).str.strip()
     else:
         pp["_pp_txn_key"] = ""
-    
-    # Eligible rows = non-withdrawal transactions that belong to a deposit group
-    pac_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna())
+
+    pac_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_same_dep_month"])
     if matched_txns:
         pac_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
-    
-    # Normalize Item Title so "Online+Donation+(WAPA+PAC)" → "online donation wapa pac"
+
     if item_title_col:
         pp["_pp_item_title_norm"] = (
             pp[item_title_col]
             .astype(str)
             .fillna("")
-            .str.replace(r"[+_]", " ", regex=True)        # plus/underscores → space
-            .str.replace(r"[^\w\s]", " ", regex=True)     # other punctuation → space
+            .str.replace(r"[+_]", " ", regex=True)
+            .str.replace(r"[^\w\s]", " ", regex=True)
             .str.lower()
-            .str.replace(r"\s+", " ", regex=True)         # collapse spaces
+            .str.replace(r"\s+", " ", regex=True)
             .str.strip()
         )
     else:
         pp["_pp_item_title_norm"] = ""
-    
-    # PAC keyword detection on normalized Item Title
+
     pac_re = r"(?:\bwapa\s+pac\b|\bpolitical\s+action\b|\bpac\b)"
-    
     pp["_pp_pac_only"] = pac_mask & pp["_pp_item_title_norm"].str.contains(pac_re, regex=True, na=False)
     pac_only = pp.loc[pp["_pp_pac_only"]].copy()
-    
+
     if not pac_only.empty and (pp_gross_col in pac_only.columns):
-        # Sum GROSS per deposit group → credit liability (fees are handled elsewhere)
         pac_add = (
             pac_only.groupby("_dep_gid")[pp_gross_col]
             .sum()
@@ -651,29 +653,22 @@ if run_btn:
                 "deposit_gid": int(r["_dep_gid"]),
                 "date": None,
                 "line_type": "CREDIT",
-                "account": PAC_LIABILITY,  # "2202 · Due to WAPA PAC"
+                "account": PAC_LIABILITY,
                 "description": "PAC Donation (PayPal Item Title)",
                 "amount": round(amt, 2),
                 "source": "PayPal PAC (Item Title only)",
             })
-    
-    # Quick on-screen audit so you can confirm gid 7 & 10 immediately
+
     with st.expander("PAC-only rows detected from PayPal Item Title"):
         preview_cols = ["_dep_gid", pp_date_col, pp_txn_col, item_title_col, pp_gross_col]
-        preview_cols = [c for c in preview_cols if c in pp.columns]
+        preview_cols = [c for c in preview_cols if c in pac_only.columns]
         st.dataframe(pac_only[preview_cols].sort_values(["_dep_gid"]).head(500))
-        
-    # --- PayPal-only INVOICE PAYMENTS (not in YM) → placeholder 99999 credit per deposit ---
-    UNMAPPED_REVIEW_ACCT = "99999 · Needs Coding (Review)"
-    
-    # Reuse pp_txn_key built earlier; exclude PP txns that actually exist in YM
-    # (You already fixed matched_txns to be pp_keys & ym_keys)
-    inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna())
+
+    # 5) PayPal-only "Payment for Invoice No. ####" → 99999 placeholder
+    inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_same_dep_month"])
     if matched_txns:
         inv_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
-    
-    # Normalize Item Title and extract invoice numbers from patterns like:
-    # "Payment+for+Invoice+No.+300010216", "Payment for Invoice No. 300010216"
+
     if item_title_col:
         pp["_pp_item_title_norm_inv"] = (
             pp[item_title_col]
@@ -686,24 +681,19 @@ if run_btn:
         )
     else:
         pp["_pp_item_title_norm_inv"] = ""
-    
-    # Regex: capture the trailing digits after "payment for invoice no" (allow optional #/.)
+
     inv_re = r"payment\s+for\s+invoice\s+no\.?\s*[#/]?\s*(\d{5,})"
-    
     pp["_pp_invoice_payment_only"] = inv_mask & pp["_pp_item_title_norm_inv"].str.contains(inv_re, regex=True, na=False)
     inv_only = pp.loc[pp["_pp_invoice_payment_only"]].copy()
-    
+
     if not inv_only.empty and (pp_gross_col in inv_only.columns):
-        # Pull invoice number for description
         inv_only["_invoice_no"] = inv_only["_pp_item_title_norm_inv"].str.extract(inv_re, expand=False)
-    
         inv_add = (
             inv_only.groupby("_dep_gid")[pp_gross_col]
             .sum()
             .reset_index()
             .rename(columns={pp_gross_col: "inv_amt"})
         )
-    
         for _, r in inv_add.iterrows():
             amt = float(r["inv_amt"] or 0)
             if amt == 0:
@@ -717,13 +707,28 @@ if run_btn:
                 "amount": round(amt, 2),
                 "source": "PayPal Invoice Payment (Item Title only)",
             })
-    
-    # Optional: audit preview
+
     with st.expander("PayPal-only Invoice Payments detected (to 99999)"):
         cols = ["_dep_gid", pp_date_col, pp_txn_col, item_title_col, "_invoice_no", pp_gross_col]
         cols = [c for c in cols if c in inv_only.columns]
         if cols:
             st.dataframe(inv_only[cols].sort_values(["_dep_gid"]).head(500))
+
+    # Collect out-of-period refunds for review (excluded from JE)
+    if pp_type_col:
+        type_is_refund = pp[pp_type_col].astype(str).str.lower().str.contains("refund|chargeback", na=False)
+    else:
+        type_is_refund = False
+    amt_is_refund = False
+    if pp_gross_col in pp.columns:
+        amt_is_refund = (pp[pp_gross_col] < 0)
+    elif pp_net_col in pp.columns:
+        amt_is_refund = (pp[pp_net_col] < 0)
+    pp["_is_refund"] = type_is_refund | amt_is_refund
+
+    oop_refunds = pp.loc[
+        (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (~pp["_same_dep_month"]) & (pp["_is_refund"])
+    ].copy()
 
     je_df = pd.DataFrame(je_rows)
 
@@ -745,12 +750,12 @@ if run_btn:
                     "source": "Auto Balance",
                 }
 
-    # Sort for readability: deposit_gid asc, DEBIT before CREDIT
+    # Sort for readability
     if not je_df.empty:
         je_df["line_order"] = je_df["line_type"].map({"DEBIT": 0, "CREDIT": 1}).fillna(2)
         je_df = je_df.sort_values(["deposit_gid","line_order","account"]).drop(columns=["line_order"])
 
-    # --- Split JE amounts into separate Debit / Credit columns (presentation)
+    # Presentation split
     je_view = je_df.copy()
     if not je_view.empty:
         je_view["Debit"]  = np.where(je_view["line_type"]=="DEBIT",  je_view["amount"].round(2), np.nan)
@@ -759,12 +764,11 @@ if run_btn:
         je_view["Debit"] = np.nan
         je_view["Credit"] = np.nan
 
-    # Nice column order for the JE export
     je_cols = ["deposit_gid", "date", "account", "description", "Debit", "Credit", "source"]
     je_cols = [c for c in je_cols if c in je_view.columns]
     je_out = je_view[je_cols] if je_cols else je_view
 
-    # Balance check based on split columns
+    # Balance check
     if not je_out.empty:
         balance_df = (
             je_out.groupby("deposit_gid")
@@ -778,7 +782,7 @@ if run_btn:
     else:
         balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
 
-    # --- Deposit Summary output ---
+    # Deposit Summary output
     dep_out = deposit_summary.reset_index().rename(columns={"_dep_gid": "deposit_gid"})[[
         "deposit_gid", "deposit_date", "withdrawal_gross", "withdrawal_fee", "withdrawal_net",
         "tx_count", "tx_gross_sum", "tx_fee_sum", "tx_net_sum", "calc_net", "variance_vs_withdrawal"
@@ -795,33 +799,68 @@ if run_btn:
         "variance_vs_withdrawal": "Variance vs Withdrawal Net"
     })
 
-    # --- Build Excel and download ---
+    # YM Detail (joined)
+    _ym_detail = ppym.rename(columns={
+        "_pp_txn_key": "TransactionID",
+        ym_item_desc_col: "Item Descriptions",
+        ym_gl_code_col: "GL Codes",
+        ym_alloc_col: "Allocation",
+        "_dues_rcpt": "Dues Receipt Date (col Z)",
+        "_eff_month": "Effective Receipt Month",
+        ym_membership_col: "Membership",
+        ym_pay_desc_col: "Payment Description",
+        ym_alloc_item_desc_col: "Allocation Item Desc (YTD)",
+    })
+    _ym_cols = ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid",
+                "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description","Allocation Item Desc (YTD)"]
+    _ym_cols = [c for c in _ym_cols if c in _ym_detail.columns]
+    _ym_detail = _ym_detail[_ym_cols].rename(columns={"_dep_gid": "deposit_gid"})
+
+    # --- Excel build with currency formatting on money columns ---
+    def moneyish(colname: str) -> bool:
+        if not isinstance(colname, str):
+            return False
+        name = colname.lower()
+        hints = [
+            "amount", "debit", "credit", "debits", "credits", "diff",
+            "gross", "fee", "net", "allocation", "recognize", "defer",
+            "sum", "calc", "variance"
+        ]
+        return any(h in name for h in hints)
+
     out_buf = io.BytesIO()
     with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
+        # Write sheets
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
-
-        # Detail tabs for review
-        _ym_detail = ppym.rename(columns={
-            "_pp_txn_key": "TransactionID",
-            ym_item_desc_col: "Item Descriptions",
-            ym_gl_code_col: "GL Codes",
-            ym_alloc_col: "Allocation",
-            "_dues_rcpt": "Dues Receipt Date (col Z)",
-            "_eff_month": "Effective Receipt Month",
-            ym_membership_col: "Membership",
-            ym_pay_desc_col: "Payment Description",
-            ym_alloc_item_desc_col: "Allocation Item Desc (YTD)",
-        })
-        _ym_cols = ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid",
-                    "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description","Allocation Item Desc (YTD)"]
-        _ym_cols = [c for c in _ym_cols if c in _ym_detail.columns]
-        _ym_detail = _ym_detail[_ym_cols].rename(columns={"_dep_gid": "deposit_gid"})
         _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
-
         if not deferral_df.empty:
             deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
+        if not oop_refunds.empty:
+            cols = [c for c in ["deposit_gid","_parsed_date", pp_txn_col, pp_item_title_col, pp_src_col, pp_gross_col, pp_fee_col, pp_net_col] if c in oop_refunds.columns]
+            oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}).to_excel(writer, sheet_name="Out-of-Period Refunds (Review)", index=False, columns=cols)
+
+        # Apply currency format to "money-like" columns on every sheet
+        wb = writer.book
+        cur = wb.add_format({"num_format": "$#,##0.00"})
+
+        def format_money_cols(df, sheet_name):
+            ws = writer.sheets[sheet_name]
+            # set reasonable column widths
+            ws.set_column(0, len(df.columns)-1, 16)
+            for i, col in enumerate(df.columns):
+                if moneyish(str(col)) or (df[col].dtype.kind in {"f","i"} and str(col).lower() not in {"deposit_gid","# paypal txns","term months","months current cy","months next (2026)","months following (2027)"}):
+                    ws.set_column(i, i, 16, cur)
+
+        format_money_cols(dep_out, "Deposit Summary")
+        format_money_cols(balance_df, "JE Balance Check")
+        format_money_cols(je_out, "JE Lines (Grouped by Deposit)")
+        format_money_cols(_ym_detail, "YM Detail (joined)")
+        if not deferral_df.empty:
+            format_money_cols(deferral_df, "Deferral Schedule")
+        if not oop_refunds.empty:
+            format_money_cols(oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}), "Out-of-Period Refunds (Review)")
 
     st.success("Reconciliation complete.")
     st.dataframe(balance_df)
