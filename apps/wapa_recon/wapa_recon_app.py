@@ -290,17 +290,6 @@ default_month_start = pd.Timestamp(year=today.year, month=today.month, day=1)
 recon_anchor = st.date_input(
     "Reconcile month (pick any day IN the month)",
     value=default_month_start.date()
-
-# --- Build dynamic output filename based on END of selected month ---
-
-from datetime import timedelta
-
-_next = (recon_anchor.replace(day=28) + timedelta(days=4)).replace(day=1)
-
-_last = _next - timedelta(days=1)
-
-out_filename = f"{_last.strftime('%Y.%m.%d')} WAPA PayPal and YM Recon.xlsx"
-
 )
 lead_bleed_days  = st.number_input("Include days BEFORE month start (front bleed)", min_value=0, max_value=31, value=0, step=1)
 trail_bleed_days = st.number_input("Include days AFTER month end (back bleed)",   min_value=0, max_value=31, value=0, step=1)
@@ -312,7 +301,13 @@ if "xlsx_bytes" not in st.session_state:
     st.session_state.xlsx_bytes = None
 
 
-# Persist dataframe previews to avoid NameError after reruns
+# Persist dataf
+# --- Build dynamic output filename based on END of selected month ---
+from datetime import timedelta
+_next = (recon_anchor.replace(day=28) + timedelta(days=4)).replace(day=1)
+_last = _next - timedelta(days=1)
+out_filename = f"{_last.strftime('%Y.%m.%d')} WAPA PayPal and YM Recon.xlsx"
+rame previews to avoid NameError after reruns
 if "balance_df" not in st.session_state:
     st.session_state.balance_df = None
 if "je_out_df" not in st.session_state:
