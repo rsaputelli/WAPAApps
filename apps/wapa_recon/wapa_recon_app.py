@@ -8,7 +8,7 @@
 # ✔ 12-mo: current year → 410x; remainder → 210x (2026)
 # ✔ 24-mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
 # ✔ DISCOUNTS ignored via YM Payment Description / Item Description
-# ✔ VAT → 4314 · Offset of Credit Card Trans Fees (from YM Item Description = "Tax/VAT" or variants; excluded from deferral)
+# ✔ VAT → 4314 · Offset of Credit Card Trans Fees (detects YM "Payment Allocation (Year-to-Date) - Item Description" = Tax/VAT; excluded from deferral)
 # ✔ PAC donations → 2202 (YM GL/text + PayPal-only Source/Description when not matched to YM)
 
 import io
@@ -65,7 +65,7 @@ DEF_MEMBERSHIP_DEFAULT_NEXT = "2100 · Deferred Dues (Next FY)"
 DEF_MEMBERSHIP_DEFAULT_FOLLOW = "2100 · Deferred Dues (Following FY)"
 
 PAC_LIABILITY          = "2202 · Due to WAPA PAC"
-VAT_OFFSET_INCOME      = "4314 · Offset of Credit Card Trans Fees"  # updated label
+VAT_OFFSET_INCOME      = "4314 · Offset of Credit Card Trans Fees"
 
 # ------------------------- Helpers -------------------------
 def norm_text(s: str) -> str:
@@ -146,11 +146,13 @@ def is_discount_text(s: str) -> bool:
     return "discount" in str(s or "").lower()
 
 def is_vat_text(s: str) -> bool:
-    d_raw = str(s or '').strip()
+    d_raw = str(s or "").strip()
     d = d_raw.lower()
-    nt = re.sub(r'[^a-z0-9]', '', d)
-    if d_raw.upper() in {'TAX/VAT','TAX / VAT','TAX- VAT','TAX - VAT','TAX -VAT','TAX VAT'} or nt in {'taxvat','vattax'}:
+    nt = re.sub(r"[^a-z0-9]", "", d)
+    # Primary: exact "Tax/VAT" or punctuation-equivalent
+    if d_raw.upper() in {"TAX/VAT", "TAX / VAT", "TAX VAT"} or nt in {"taxvat","vattax"}:
         return True
+    # Secondary: common variants
     return ("tax" in d) or ("vat" in d) or ("cc fee offset" in d) or ("credit card fee offset" in d) or ("processing fee offset" in d)
 
 def is_pac_text(s: str) -> bool:
@@ -181,7 +183,7 @@ Upload CSVs (any column order is OK; headers auto-detected):
 - 24-month: current-year months recognized; **12 months → 210x (2026)**; remaining months → **212x (2027)**
 - **Discount** rows ignored (via Payment Description / Item Description).
 - **PAC** donations credited to **2202 · Due to WAPA PAC**.
-- **VAT / CC fee offset** credited to **4314 · Offset of Credit Card Trans Fees** (YM Item Description "Tax/VAT").
+- **VAT / CC fee offset** credited to **4314 · Offset of Credit Card Trans Fees** (YM Allocation Item Desc "Tax/VAT").
 """)
 
 pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
@@ -242,12 +244,22 @@ if run_btn:
 
     # --- YM columns ---
     ym_ref_col        = find_col(ym, ["invoice_-_reference_number", "invoice_reference_number", "reference_number", "invoice"])
-    ym_item_desc_col  = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])  # N
+    ym_item_desc_col  = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])  # N (legacy)
     ym_gl_code_col    = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                 # O
     ym_alloc_col      = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])               # Q
     ym_dues_rcpt_col  = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
     ym_membership_col = find_col(ym, ["membership", "membership_type"])  # AC
     ym_pay_desc_col   = find_col(ym, ["payment_description", "payment_descriptions", "payment_desc", "ym_payment_description"])
+
+    # ✨ NEW: YM Column N that actually carries "Tax/VAT" description
+    ym_alloc_item_desc_col = find_col(ym, [
+        "payment_allocation_(year-to-date)_-_item_description",
+        "payment_allocation_-_item_description",
+        "payment_allocation_item_description",
+        "payment_allocation_ytd_item_description",
+        "payment_allocation_item_desc",
+        "allocation_item_description",
+    ])
 
     if ym_alloc_col and ym[ym_alloc_col].dtype == object:
         ym[ym_alloc_col] = to_float(ym[ym_alloc_col])
@@ -259,8 +271,11 @@ if run_btn:
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
-    # Build pp↔ym join frame with the columns we need (include Payment Description for discounts + PAC/VAT)
-    join_cols = [c for c in [ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col, "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col] if c]
+    # Build pp↔ym join frame (include the Allocation Item Description for VAT detection)
+    join_cols = [c for c in [
+        ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col,
+        "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col, ym_alloc_item_desc_col
+    ] if c]
     ppym = transactions.merge(
         ym[join_cols],
         left_on="_pp_txn_key",
@@ -309,6 +324,7 @@ if run_btn:
             pay_desc  = str(r.get(ym_pay_desc_col, "") or "")
             gl_code   = str(r.get(ym_gl_code_col, "") or "")
             mem_str   = r.get(ym_membership_col, "")
+            alloc_item_desc = str(r.get(ym_alloc_item_desc_col, "") or "")
 
             # ignore discounts outright
             if is_discount_text(pay_desc) or is_discount_text(item_desc):
@@ -316,8 +332,11 @@ if run_btn:
             # exclude PAC rows
             if is_pac_line(item_desc, gl_code, pay_desc):
                 continue
-            # exclude VAT/fee-offset rows from deferral
-            _vat_gate = is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower())
+            # exclude VAT/fee-offset rows from deferral (including Allocation Item Desc text)
+            _vat_gate = (
+                is_vat_text(item_desc) or is_vat_text(pay_desc) or
+                is_vat_text(alloc_item_desc) or ("4314" in str(gl_code).lower())
+            )
             if _vat_gate:
                 continue
 
@@ -458,6 +477,7 @@ if run_btn:
                 pay_desc  = str(r.get(ym_pay_desc_col, "") or "")
                 gl_code   = str(r.get(ym_gl_code_col, "") or "")
                 ref_key   = str(r.get("_ym_ref_key",""))
+                alloc_item_desc = str(r.get(ym_alloc_item_desc_col, "") or "")
 
                 # Ignore discounts
                 if is_discount_text(pay_desc) or is_discount_text(item_desc):
@@ -468,9 +488,11 @@ if run_btn:
                     pac_sum += alloc
                     continue
 
-                # VAT Offset (by YM Item Description 'Tax/VAT' or GL 4314)
-                is_vat = is_vat_text(item_desc) or is_vat_text(pay_desc)
-                if is_vat or ("4314" in str(gl_code).lower()):
+                # VAT Offset (by Allocation Item Desc 'Tax/VAT', item/pay desc, or GL 4314)
+                if (
+                    is_vat_text(item_desc) or is_vat_text(pay_desc) or
+                    is_vat_text(alloc_item_desc) or ("4314" in str(gl_code).lower())
+                ):
                     vat_sum += alloc
                     continue
 
@@ -688,9 +710,10 @@ if run_btn:
             "_eff_month": "Effective Receipt Month",
             ym_membership_col: "Membership",
             ym_pay_desc_col: "Payment Description",
+            ym_alloc_item_desc_col: "Allocation Item Desc (YTD)",
         })
         _ym_cols = ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid",
-                    "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"]
+                    "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description","Allocation Item Desc (YTD)"]
         _ym_cols = [c for c in _ym_cols if c in _ym_detail.columns]
         _ym_detail = _ym_detail[_ym_cols].rename(columns={"_dep_gid": "deposit_gid"})
         _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
