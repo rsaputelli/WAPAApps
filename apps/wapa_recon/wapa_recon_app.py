@@ -216,7 +216,7 @@ recon_anchor = st.date_input(
 lead_bleed_days  = st.number_input("Include days BEFORE month start (front bleed)", min_value=0, max_value=31, value=0, step=1)
 trail_bleed_days = st.number_input("Include days AFTER month end (back bleed)",   min_value=0, max_value=31, value=0, step=1)
 
-run_btn = st.button("Run Reconciliation")
+run_btn = st.button("Run Reconciliation", key="run_recon_btn")
 
 if run_btn:
     if not (pp_file and ym_file and bank_file):
@@ -544,17 +544,17 @@ if run_btn:
                 continue
 
             # Membership gate for DEFERRALS ONLY:
-            # Category (M) = "Membership" wins; else allow GL 410x; else fallback to non-empty Membership cell.
+            # Only allow if Category (M) startswith "membership" OR GL code startswith "410".
+            # (Do NOT pass just because "Membership" text exists somewhere.)
             is_membership_dues = False
             if category.startswith("membership"):
                 is_membership_dues = True
             elif gl_code.strip().startswith("410"):
                 is_membership_dues = True
-            elif isinstance(mem_str, str) and mem_str.strip():
-                is_membership_dues = True
 
             if not is_membership_dues:
                 continue
+
 
             eff_month = pd.to_datetime(r.get("_eff_month", pd.NaT), errors="coerce")
             if pd.isna(eff_month):
@@ -927,6 +927,31 @@ if run_btn:
         cols = [c for c in cols if c in inv_only.columns]
         if cols:
             st.dataframe(inv_only[cols].sort_values(["_dep_gid"]).head(500))
+    with st.expander("Per-deposit audit (why a deposit may be off)"):
+        if not je_out.empty:
+            aud = je_out.copy()
+            aud["side"] = np.where(aud["Credit"].notna(), "CREDIT", "DEBIT")
+            grp = (
+                aud.groupby(["deposit_gid","side","account"])
+                   .agg(Amount=("Debit", lambda s: round(float(np.nansum(s)) or 0.0, 2)))
+                   .reset_index()
+            )
+            # fold credits (use Credit column, not Debit)
+            cr = (
+                aud[["deposit_gid","side","account","Credit"]]
+                .dropna(subset=["Credit"])
+                .rename(columns={"Credit":"Amount"})
+            )
+            dr = (
+                aud[["deposit_gid","side","account","Debit"]]
+                .dropna(subset=["Debit"])
+                .rename(columns={"Debit":"Amount"})
+            )
+            audit = pd.concat([dr, cr], ignore_index=True)
+            audit["Amount"] = audit["Amount"].astype(float).round(2)
+            st.dataframe(audit.sort_values(["deposit_gid","side","account"]))
+        else:
+            st.write("No JE rows to audit.")
 
     # Collect out-of-period refunds for review (excluded from JE) — PayPal view
     if pp_type_col:
@@ -1126,6 +1151,7 @@ if run_btn:
         data=out_buf.getvalue(),
         file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        key="download_xlsx"
     )
 
     with st.expander("Preview: JE Lines (first 200 rows)"):
