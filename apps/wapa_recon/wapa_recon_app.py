@@ -1455,17 +1455,8 @@ if run_btn:
             return any(h in name for h in hints)
     out_buf = io.BytesIO()
 
-    # --- Build dynamic output filename based on selected date ---
-    date_str = as_of_date.strftime("%Y.%m.%d")
-    out_filename = f"{date_str} WAPA PayPal and YM Recon.xlsx"
-
     with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
-        dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
-        balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
-        je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
-        _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
-
-            
+        
         # ---- NEW first two tabs ----
         if not refunds_df.empty:
             refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
@@ -1585,7 +1576,7 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
     st.download_button(
         label="Download Excel Workbook",
         data=st.session_state.xlsx_bytes,
-        file_name=out_filename,
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_xlsx"
     )
