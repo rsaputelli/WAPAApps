@@ -376,7 +376,36 @@ if run_btn:
     ppym = transactions.merge(
 
     )
-
+# --- Build a set of registration price points from YM to help classify "Payment for Invoice" rows ---
+    reg_price_points = set()
+    dues_price_points = set([165.00, 175.00, 50.00, 99.00])  # known WAPA dues price points (includes auto-renew + student promo)
+    price_to_dues_acct = {}
+    try:
+        if not ym.empty:
+            _cand = ym.copy()
+            # Normalize text
+            cat_norm = (_cand[ym_category_col].astype(str).str.lower() if ym_category_col in _cand.columns else "")
+            desc_norm = (_cand[ym_item_desc_col].astype(str).str.lower() if ym_item_desc_col in _cand.columns else "")
+            dues_like = (
+                (cat_norm.str.contains(r"\bmember|membership\b", na=False)) |
+                (desc_norm.str.contains(r"fellow|member|affiliate|sustaining|student|organizational|dues", na=False))
+            )
+            price_col_guess = None
+            for guess in ["Amount","amount","Price","price","Charge","charge","Gross","gross"]:
+                if guess in _cand.columns:
+                    price_col_guess = guess
+                    break
+            if price_col_guess is not None:
+                vals = _cand.loc[dues_like, [price_col_guess]].copy()
+                vals[price_col_guess] = pd.to_numeric(vals[price_col_guess], errors="coerce")
+                vals = vals.dropna()
+                for v in vals[price_col_guess].tolist():
+                    try:
+                        vv = float(round(v, 2))
+                        if vv != 0:
+                            dues_price_points.add(vv)
+                    except Exception:
+                        pass
     # TRUE matches only: intersection of PP Txn IDs and YM Ref IDs
     pp_keys = set(transactions["_pp_txn_key"].dropna().astype(str))
     ym_keys = set(ym["_ym_ref_key"].dropna().astype(str))
@@ -408,36 +437,6 @@ if run_btn:
     bank_date_col   = find_col(bank, ["date"])   # 'Date'
     bank_credit_col = find_col(bank, ["credit"]) # 'Credit'
 
-    # --- Build a set of registration price points from YM to help classify "Payment for Invoice" rows ---
-    reg_price_points = set()
-    dues_price_points = set([165.00, 175.00, 50.00, 99.00])  # known WAPA dues price points (includes auto-renew + student promo)
-    price_to_dues_acct = {}
-    try:
-        if not ym.empty:
-            _cand = ym.copy()
-            # Normalize text
-            cat_norm = (_cand[ym_category_col].astype(str).str.lower() if ym_category_col in _cand.columns else "")
-            desc_norm = (_cand[ym_item_desc_col].astype(str).str.lower() if ym_item_desc_col in _cand.columns else "")
-            dues_like = (
-                (cat_norm.str.contains(r"\bmember|membership\b", na=False)) |
-                (desc_norm.str.contains(r"fellow|member|affiliate|sustaining|student|organizational|dues", na=False))
-            )
-            price_col_guess = None
-            for guess in ["Amount","amount","Price","price","Charge","charge","Gross","gross"]:
-                if guess in _cand.columns:
-                    price_col_guess = guess
-                    break
-            if price_col_guess is not None:
-                vals = _cand.loc[dues_like, [price_col_guess]].copy()
-                vals[price_col_guess] = pd.to_numeric(vals[price_col_guess], errors="coerce")
-                vals = vals.dropna()
-                for v in vals[price_col_guess].tolist():
-                    try:
-                        vv = float(round(v, 2))
-                        if vv != 0:
-                            dues_price_points.add(vv)
-                    except Exception:
-                        pass
             # Map price -> GL when available
             if ym_gl_code_col in _cand.columns and price_col_guess is not None:
                 gls = _cand.loc[dues_like, [price_col_guess, ym_gl_code_col]].copy()
