@@ -375,27 +375,6 @@ if run_btn:
     ] if c]
     ppym = transactions.merge(
 
-    # --- Build a set of registration price points from YM to help classify "Payment for Invoice" rows ---
-    reg_price_points = set()
-    dues_price_points = set([165.00, 175.00, 50.00, 99.00])  # known WAPA dues price points ...
-    price_to_dues_acct = {}
-
-    try:
-        if not ym.empty:
-            _cand = ym.copy()
-            # Normalize text
-            cat_norm = (_cand[ym_category_col].astype(str).str.lower()
-                        if ym_category_col in _cand.columns else "")
-            desc_norm = (_cand[ym_item_desc_col].astype(str).str.lower()
-                         if ym_item_desc_col in _cand.columns else "")
-            dues_like = (
-                (cat_norm.str.contains(r"\bmember|membership\b", na=False)) |
-                (desc_norm.str.contains(r"fellow|member|affiliate|sustaining|student|organizational|dues", na=False))
-            )
-            ...
-    except Exception:
-        pass
-
         # Map price -> GL account when available
         if ym_gl_code_col in _cand.columns and price_col_guess is not None:
             gls = _cand.loc[dues_like, [price_col_guess, ym_gl_code_col]].copy()
@@ -474,27 +453,52 @@ except Exception:
     # 1) Bank columns (explicitly prioritize A:Date and G:Credit)
     bank_date_col   = find_col(bank, ["date"])   # 'Date'
     bank_credit_col = find_col(bank, ["credit"]) # 'Credit'
-    bank_deposit_col = find_col(bank, ["deposit"])  # optional secondary
-    bank_amount_col  = find_col(bank, ["amount"])   # optional tertiary
 
-    # Normalize amounts (strip $, commas)
-    for c in [bank_credit_col, bank_deposit_col, bank_amount_col]:
-        if c and bank[c].dtype == object:
-            bank[c] = to_float(bank[c])
-
-    # Parse bank dates
-    bank["_bank_date"] = pd.to_datetime(bank[bank_date_col], errors="coerce") if bank_date_col else pd.NaT
-
-    # 2) Coalesce to a single positive deposit amount: Credit -> Deposit -> Amount(abs)
-    bank["_bank_amt"] = np.nan
-    if bank_credit_col:
-        bank["_bank_amt"] = bank[bank_credit_col].where(bank[bank_credit_col] > 0)
-    if bank["_bank_amt"].isna().all() and bank_deposit_col:
-        bank["_bank_amt"] = bank[bank_deposit_col].where(bank[bank_deposit_col] > 0)
-    if bank["_bank_amt"].isna().all() and bank_amount_col:
-        bank["_bank_amt"] = bank[bank_amount_col].abs()
-
-    # 3) Keep bank rows in the recon window (front/back bleed applied)
+    # --- Build a set of registration price points from YM to help classify "Payment for Invoice" rows ---
+    reg_price_points = set()
+    dues_price_points = set([165.00, 175.00, 50.00, 99.00])  # known WAPA dues price points (includes auto-renew + student promo)
+    price_to_dues_acct = {}
+    try:
+        if not ym.empty:
+            _cand = ym.copy()
+            # Normalize text
+            cat_norm = (_cand[ym_category_col].astype(str).str.lower() if ym_category_col in _cand.columns else "")
+            desc_norm = (_cand[ym_item_desc_col].astype(str).str.lower() if ym_item_desc_col in _cand.columns else "")
+            dues_like = (
+                (cat_norm.str.contains(r"\bmember|membership\b", na=False)) |
+                (desc_norm.str.contains(r"fellow|member|affiliate|sustaining|student|organizational|dues", na=False))
+            )
+            price_col_guess = None
+            for guess in ["Amount","amount","Price","price","Charge","charge","Gross","gross"]:
+                if guess in _cand.columns:
+                    price_col_guess = guess
+                    break
+            if price_col_guess is not None:
+                vals = _cand.loc[dues_like, [price_col_guess]].copy()
+                vals[price_col_guess] = pd.to_numeric(vals[price_col_guess], errors="coerce")
+                vals = vals.dropna()
+                for v in vals[price_col_guess].tolist():
+                    try:
+                        vv = float(round(v, 2))
+                        if vv != 0:
+                            dues_price_points.add(vv)
+                    except Exception:
+                        pass
+            # Map price -> GL when available
+            if ym_gl_code_col in _cand.columns and price_col_guess is not None:
+                gls = _cand.loc[dues_like, [price_col_guess, ym_gl_code_col]].copy()
+                gls[price_col_guess] = pd.to_numeric(gls[price_col_guess], errors="coerce")
+                gls = gls.dropna()
+                for _, r in gls.iterrows():
+                    try:
+                        vv = float(round(r[price_col_guess], 2))
+                        acct = str(r[ym_gl_code_col]).strip()
+                        if vv and acct:
+                            price_to_dues_acct[vv] = acct
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     bank_in_window = bank.loc[
         bank["_bank_date"].between(window_start, window_end, inclusive="both")
     ].copy()
