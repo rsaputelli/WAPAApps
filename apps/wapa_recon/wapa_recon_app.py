@@ -919,7 +919,7 @@ if run_btn:
     else:
         pp["_pp_item_title_norm_reg"] = ""
 
-    reg_kw = r"(registration|conference|cme|meeting\s*registration|attendee)"
+    reg_kw = r"(registration|reg\b|conference|cme|meeting(\s*registration)?|annual|spring|fall|attendee|ticket)"
     pp["_pp_registration_only"] = reg_mask & pp["_pp_item_title_norm_reg"].str.contains(reg_kw, regex=True, na=False)
     pp_reg_only = pp.loc[pp["_pp_registration_only"]].copy()
 
@@ -1041,7 +1041,7 @@ if run_btn:
             pp["_pp_item_title_norm_reg"] = ""
 
         # Keywords that imply conference registration
-        reg_kw = r"(registration|conference|cme|meeting\s*registration|attendee)"
+        reg_kw = r"(registration|reg\b|conference|cme|meeting(\s*registration)?|annual|spring|fall|attendee|ticket)"
 
         pp["_pp_registration_only"] = reg_mask & pp["_pp_item_title_norm_reg"].str.contains(reg_kw, regex=True, na=False)
         pp_reg_only = pp.loc[pp["_pp_registration_only"]].copy()
@@ -1091,7 +1091,7 @@ if run_btn:
     # NEW: YM "Refunds" view (from Allocation Item Desc col N) — informational only, no JE impact
     refunds_df = pd.DataFrame()
     if not ppym.empty and ym_alloc_item_desc_col:
-        refund_mask = ppym[ym_alloc_item_desc_col].astype(str).str.contains(r"\\brefund\\b", case=False, na=False)
+        refund_mask = ppym[ym_alloc_item_desc_col].astype(str).str.contains(r"\brefund\b", case=False, na=False)
         if refund_mask.any():
             cols = [
                 "_dep_gid",
