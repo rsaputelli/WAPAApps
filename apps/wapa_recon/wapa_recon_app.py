@@ -1194,8 +1194,8 @@ if run_btn:
             refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
 
         consolidated_je.to_excel(writer, sheet_name="Consolidated JE (Single Entry)", index=False)
-        
-        # Write sheets
+
+        # ---- existing tabs follow ----
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
@@ -1203,26 +1203,36 @@ if run_btn:
         if not deferral_df.empty:
             deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
         if not oop_refunds.empty:
-            cols = [c for c in ["deposit_gid","_parsed_date", pp_txn_col, pp_item_title_col, pp_src_col, pp_gross_col, pp_fee_col, pp_net_col] if c in oop_refunds.columns]
-            oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}).to_excel(writer, sheet_name="Out-of-Period Refunds (Review)", index=False, columns=cols)
-        if not refunds_df.empty:
-            refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
+            cols = [c for c in ["deposit_gid","_parsed_date", pp_txn_col, pp_item_title_col, pp_src_col,
+                                pp_gross_col, pp_fee_col, pp_net_col] if c in oop_refunds.columns]
+            oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}).to_excel(
+                writer, sheet_name="Out-of-Period Refunds (Review)", index=False, columns=cols
+            )
 
-        # Apply currency format to "money-like" columns on every sheet
+        # ---- formatting block ----
         wb = writer.book
         cur = wb.add_format({"num_format": "$#,##0.00"})
 
         def format_money_cols(df, sheet_name):
             ws = writer.sheets[sheet_name]
-            # set reasonable column widths
             ws.set_column(0, len(df.columns)-1, 16)
             for i, col in enumerate(df.columns):
-                if moneyish(str(col)) or (df[col].dtype.kind in {"f","i"} and str(col).lower() not in {"deposit_gid","# paypal txns","term months","months current cy","months next (2026)","months following (2027)"}):
+                if moneyish(str(col)) or (
+                    df[col].dtype.kind in {"f","i"}
+                    and str(col).lower() not in {
+                        "deposit_gid","# paypal txns","term months",
+                        "months current cy","months next (2026)",
+                        "months following (2027)"
+                    }
+                ):
                     ws.set_column(i, i, 16, cur)
+
         # format new tabs first
         if not refunds_df.empty:
             format_money_cols(refunds_df, "Refunds")
         format_money_cols(consolidated_je, "Consolidated JE (Single Entry)")
+
+        # then your existing formats
         format_money_cols(dep_out, "Deposit Summary")
         format_money_cols(balance_df, "JE Balance Check")
         format_money_cols(je_out, "JE Lines (Grouped by Deposit)")
@@ -1230,9 +1240,11 @@ if run_btn:
         if not deferral_df.empty:
             format_money_cols(deferral_df, "Deferral Schedule")
         if not oop_refunds.empty:
-            format_money_cols(oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}), "Out-of-Period Refunds (Review)")
-        if not refunds_df.empty:
-            format_money_cols(refunds_df, "Refunds")
+            format_money_cols(
+                oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}),
+                "Out-of-Period Refunds (Review)"
+            )
+
 
     st.success("Reconciliation complete.")
     st.dataframe(balance_df)        
