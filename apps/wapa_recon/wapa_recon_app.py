@@ -1,17 +1,19 @@
-# wapa_recon_app.py
+# wapa_recon_app.py (v5b patches)
 # Streamlit app for WAPA PayPal ↔ YM ↔ Bank reconciliation
 # Features:
 # - JE Lines grouped by deposit (deposit_gid), DEBITs first
 # - Split Debit / Credit columns in export
 # - PayPal Fees posted as positive debits (robust to missing cols)
 # - Membership deferrals using YM Column Z + mid-month rule
-# - 12/24-month deferral logic
+# - 12/24-month deferral logic (enhanced: detects 2-year in Membership, Allocation Item Desc, or Item Desc)
 # - DISCOUNTS ignored via YM Payment Description / Item Description
 # - VAT → 4314 (detects YM "Payment Allocation (Year-to-Date) - Item Description" = Tax/VAT; excluded from deferral)
 # - PAC donations → 2202 (YM GL/text + PayPal-only Item Title when not matched to YM)
 # - PayPal-only Invoice Payments → 99999 (placeholder, flagged for manual coding)
 # - YM Payment Date normalization & period filter (prevents next-month bleed)
+# - Deposit Summary now also shows **Bank Deposit Date**
 # - Excel: all money columns formatted as currency (2 decimals)
+# - NEW: "Refunds" sheet for YM Allocation Item Desc containing "Refund" (no JE impact)
 
 import io
 import re
@@ -84,7 +86,7 @@ def read_csv_robust(file) -> pd.DataFrame:
 
 def normalize_cols(df):
     df = df.copy()
-    df.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in df.columns]
+    df.columns = [re.sub(r'\\s+', ' ', str(c)).strip() for c in df.columns]
     df.columns = [c.lower().replace(" ", "_") for c in df.columns]
     return df
 
@@ -101,7 +103,7 @@ def find_col(df, candidates):
 def to_float(series: pd.Series) -> pd.Series:
     return (
         series.astype(str)
-        .str.replace(r"[^0-9\.\-\+]", "", regex=True)
+        .str.replace(r"[^0-9\\.\\-\\+]", "", regex=True)
         .replace({"": np.nan, "-": np.nan})
         .astype(float)
     )
@@ -135,9 +137,13 @@ def infer_member_type(mem_val: str) -> str:
             return k
     return "member"
 
-def is_two_year(mem_val: str) -> bool:
-    s = str(mem_val or "").lower()
-    return ("2-year" in s) or ("2year" in s) or ("two year" in s) or ("24" in s and "month" in s)
+# Expanded 2-year text detector usable on any field
+def is_two_year_text(s: str) -> bool:
+    t = str(s or "").lower()
+    return (
+        ("2-year" in t) or ("2yr" in t) or ("2 yr" in t) or
+        ("two year" in t) or ("24 month" in t) or ("24-month" in t) or ("24 mo" in t)
+    )
 
 def is_discount_text(s: str) -> bool:
     return "discount" in str(s or "").lower()
@@ -169,7 +175,8 @@ Upload CSVs (any column order is OK; headers auto-detected):
 - **PayPal**: Type, Gross, Fee, Net, Transaction ID, Item Title, Source/Description (if present)
 - **YM Export**: Invoice/Reference, Item Description (N), GL Code (O), Allocation (Q),
                 **Member/Non-Member - Date Last Dues Transaction** (Z), **Payment Description**, Membership,
-                **Payment Allocation (YTD) - Item Description**, **Payment Date** (any grouping)
+                **Payment Allocation (YTD) - Item Description**, **Payment Date** (any grouping),
+                **Payment Allocation (YTD) - Category** (M, e.g., Membership/Store/Donation)
 - **Bank (TD)**: Date, Description, Deposit/Credit/Amount
 """)
 
@@ -248,7 +255,7 @@ if run_btn:
     ym_membership_col = find_col(ym, ["membership", "membership_type"])                                       # AC
     ym_pay_desc_col   = find_col(ym, ["payment_description", "payment_descriptions", "payment_desc", "ym_payment_description"])
 
-    # Allocation Item Description (for VAT flagging)
+    # Allocation Item Description (for VAT/Refund flagging)
     ym_alloc_item_desc_col = find_col(ym, [
         "payment_allocation_(year-to-date)_-_item_description",
         "payment_allocation_-_item_description",
@@ -256,6 +263,15 @@ if run_btn:
         "payment_allocation_ytd_item_description",
         "payment_allocation_item_desc",
         "allocation_item_description",
+    ])
+
+    # NEW: YM category col (M) e.g., Membership / Store / Donation
+    ym_category_col = find_col(ym, [
+        "payment_allocation_(year-to-date)_-_category",
+        "payment_allocation_category",
+        "category",
+        "module",
+        "type"
     ])
 
     # NEW: normalize YM Payment Date (covers multiple export layouts)
@@ -284,7 +300,9 @@ if run_btn:
 
     # --- YM: keep only rows whose Payment Date falls inside the window
     if ym_pay_date_col:
-        ym = ym.loc[ym["_ym_pay_date"].between(window_start, window_end)].copy()
+        ym = ym.loc(ym["_ym_pay_date"].between(window_start, window_end)).copy() if not ym.empty else ym
+        # safer alt when df may be empty:
+        # ym = ym.loc[ym["_ym_pay_date"].between(window_start, window_end)].copy()
 
     # --- PayPal: keep only CHILD transactions that:
     #     (a) belong to a deposit whose WITHDRAWAL DATE is inside the selected month
@@ -303,15 +321,14 @@ if run_btn:
 
     transactions = pp.loc[pp["_child_in_window"]].copy()
 
-
     # --- Link PP transactions to YM by TransactionID ↔ Reference
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
-    # Build pp↔ym join frame (include the Allocation Item Description for VAT detection)
+    # Build pp↔ym join frame (include the Allocation Item Description for VAT/Refund detection)
     join_cols = [c for c in [
         ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col,
-        "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col, ym_alloc_item_desc_col
+        "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col, ym_alloc_item_desc_col, ym_category_col
     ] if c]
     ppym = transactions.merge(
         ym[join_cols],
@@ -347,7 +364,6 @@ if run_btn:
         }
     )
     # --- Map PayPal withdrawals to Bank deposits to anchor month by bank posting date ---
-
 
     # 1) Bank columns (explicitly prioritize A:Date and G:Credit)
     bank_date_col   = find_col(bank, ["date"])   # 'Date'
@@ -443,13 +459,11 @@ if run_btn:
     # Recompute helpers
     deposit_summary["calc_net"] = deposit_summary["tx_gross_sum"].fillna(0) - deposit_summary["tx_fee_sum"].fillna(0)
     deposit_summary["variance_vs_withdrawal"] = deposit_summary["withdrawal_net"].fillna(0) - deposit_summary["calc_net"]
-    # --- Refresh PP flags/masks & rebuild joins AFTER bank mapping ---
 
-    # 1) Map the bank-anchored month flag from withdrawals back onto all PP rows by deposit_gid
+    # --- Refresh PP flags/masks & rebuild joins AFTER bank mapping ---
     wd_flag_map = withdrawals.set_index("_dep_gid")["_wd_in_selected_month"].to_dict()
     pp["_wd_in_selected_month"] = pp["_dep_gid"].map(wd_flag_map)
 
-    # 2) Recompute the child-in-window mask with the refreshed wd-month flag
     pp["_child_in_window"] = (
         (~pp["_is_withdrawal"]) &
         (pp["_dep_gid"].notna()) &
@@ -457,16 +471,14 @@ if run_btn:
         (pd.to_datetime(pp["_parsed_date"], errors="coerce").between(window_start, window_end))
     )
 
-    # 3) Rebuild transactions subset and the PP↔YM join using the updated mask
     transactions = pp.loc[pp["_child_in_window"]].copy()
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
     join_cols = [c for c in [
         ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col,
-        "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col, ym_alloc_item_desc_col
+        "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col, ym_alloc_item_desc_col, ym_category_col
     ] if c]
-
     ppym = transactions.merge(
         ym[join_cols],
         left_on="_pp_txn_key",
@@ -475,12 +487,10 @@ if run_btn:
         suffixes=("", "_ym"),
     )
 
-    # 4) Recompute matched_txns with the refreshed transactions
     pp_keys = set(transactions["_pp_txn_key"].dropna().astype(str))
     ym_keys = set(ym["_ym_ref_key"].dropna().astype(str))
     matched_txns = pp_keys & ym_keys
       
-
     # --- Build Deferral Schedule
     deferral_rows = []
     if not ppym.empty and ym_alloc_col:
@@ -494,7 +504,9 @@ if run_btn:
             gl_code   = str(r.get(ym_gl_code_col, "") or "")
             mem_str   = r.get(ym_membership_col, "")
             alloc_item_desc = str(r.get(ym_alloc_item_desc_col, "") or "")
+            category  = str(r.get(ym_category_col, "") or "").strip().lower()
 
+            # Exclusions preserved
             if is_discount_text(pay_desc) or is_discount_text(item_desc):
                 continue
             if is_pac_line(item_desc, gl_code, pay_desc):
@@ -506,8 +518,13 @@ if run_btn:
             if _vat_gate:
                 continue
 
-            is_membership_dues = (isinstance(mem_str, str) and mem_str.strip() != "") and ("dues" in item_desc.lower())
-            if not is_membership_dues and (isinstance(mem_str, str) and mem_str.strip() != "") and gl_code.strip().startswith("410"):
+            # NEW membership gate: prefer Category (M), else GL 410x, else presence of Membership value
+            is_membership_dues = False
+            if category.startswith("membership"):
+                is_membership_dues = True
+            elif gl_code.strip().startswith("410"):
+                is_membership_dues = True
+            elif isinstance(mem_str, str) and mem_str.strip():
                 is_membership_dues = True
 
             if not is_membership_dues:
@@ -515,14 +532,20 @@ if run_btn:
 
             eff_month = pd.to_datetime(r.get("_eff_month", pd.NaT), errors="coerce")
             if pd.isna(eff_month):
-                # last resorts if needed
                 eff_month = pd.to_datetime(r.get("_dues_rcpt", pd.NaT), errors="coerce")
             if pd.isna(eff_month):
                 eff_month = pd.NaT
 
             mt = infer_member_type(mem_str)
             months_current = months_left_in_year(eff_month)
-            total_months = 24 if is_two_year(mem_str) else 12
+
+            # NEW: determine 24 vs 12 from ANY of: Membership (AD), Allocation Item Desc (N), Item Desc
+            two_year_flag = (
+                is_two_year_text(mem_str) or
+                is_two_year_text(alloc_item_desc) or
+                is_two_year_text(item_desc)
+            )
+            total_months = 24 if two_year_flag else 12
 
             cur_mo   = min(months_current, total_months)
             next_mo  = min(12, max(0, total_months - cur_mo))
@@ -593,7 +616,6 @@ if run_btn:
         fee_tx = pp.loc[
             (~pp["_is_withdrawal"]) &
             (pp["_dep_gid"].notna()) &
-            (pp[pp_fee_col].notna()) &
             (pp["_child_in_window"])
         ].copy()
 
@@ -768,11 +790,10 @@ if run_btn:
     pac_mask = (
         (~pp["_is_withdrawal"]) &
         (pp["_dep_gid"].notna()) &
-        (pp["_child_in_window"])      # <-- changed here
+        (pp["_child_in_window"])
     )
     if matched_txns:
         pac_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
-
 
     if item_title_col:
         pp["_pp_item_title_norm"] = (
@@ -868,7 +889,7 @@ if run_btn:
         if cols:
             st.dataframe(inv_only[cols].sort_values(["_dep_gid"]).head(500))
 
-    # Collect out-of-period refunds for review (excluded from JE)
+    # Collect out-of-period refunds for review (excluded from JE) — PayPal view
     if pp_type_col:
         type_is_refund = pp[pp_type_col].astype(str).str.lower().str.contains("refund|chargeback", na=False)
     else:
@@ -883,10 +904,42 @@ if run_btn:
     oop_refunds = pp.loc[
         (~pp["_is_withdrawal"]) &
         (pp["_dep_gid"].notna()) &
-        (~pp["_child_in_window"]) &   # <-- replaced here
+        (~pp["_child_in_window"]) &
         (pp["_is_refund"])
     ].copy()
 
+    # NEW: YM "Refunds" view (from Allocation Item Desc col N) — informational only, no JE impact
+    refunds_df = pd.DataFrame()
+    if not ppym.empty and ym_alloc_item_desc_col:
+        refund_mask = ppym[ym_alloc_item_desc_col].astype(str).str.contains(r"\\brefund\\b", case=False, na=False)
+        if refund_mask.any():
+            cols = [
+                "_dep_gid",
+                "_pp_txn_key",
+                ym_alloc_col,
+                ym_item_desc_col,
+                ym_alloc_item_desc_col,
+                ym_pay_desc_col,
+                "_ym_ref_key",
+                "_dues_rcpt",
+                "_ym_pay_date",
+                ym_membership_col,
+                ym_category_col
+            ]
+            cols = [c for c in cols if c in ppym.columns]
+            refunds_df = ppym.loc[refund_mask, cols].copy()
+            refunds_df = refunds_df.rename(columns={
+                "_pp_txn_key": "TransactionID",
+                "_ym_ref_key": "YM Reference",
+                "_dues_rcpt": "Dues Receipt Date (col Z)",
+                "_ym_pay_date": "Payment Date",
+                ym_alloc_col: "Allocation",
+                ym_item_desc_col: "Item Descriptions",
+                ym_alloc_item_desc_col: "Allocation Item Desc (YTD)",
+                ym_pay_desc_col: "Payment Description",
+                ym_membership_col: "Membership",
+                ym_category_col: "Category"
+            })
 
     je_df = pd.DataFrame(je_rows)
 
@@ -940,12 +993,13 @@ if run_btn:
     else:
         balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
 
-    # Deposit Summary output
+    # Deposit Summary output (now includes Bank Deposit Date)
     dep_out = deposit_summary.reset_index().rename(columns={"_dep_gid": "deposit_gid"})[[
-        "deposit_gid", "deposit_date", "withdrawal_gross", "withdrawal_fee", "withdrawal_net",
+        "deposit_gid", "deposit_date", "_wd_bank_post_date", "withdrawal_gross", "withdrawal_fee", "withdrawal_net",
         "tx_count", "tx_gross_sum", "tx_fee_sum", "tx_net_sum", "calc_net", "variance_vs_withdrawal"
     ]].rename(columns={
-        "deposit_date": "Deposit Date",
+        "deposit_date": "PayPal Withdrawal Date",
+        "_wd_bank_post_date": "Bank Deposit Date",
         "withdrawal_gross": "Withdrawal Gross",
         "withdrawal_fee": "Withdrawal Fee",
         "withdrawal_net": "Withdrawal Net",
@@ -968,9 +1022,10 @@ if run_btn:
         ym_membership_col: "Membership",
         ym_pay_desc_col: "Payment Description",
         ym_alloc_item_desc_col: "Allocation Item Desc (YTD)",
+        ym_category_col: "Category"
     })
     _ym_cols = ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid",
-                "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description","Allocation Item Desc (YTD)"]
+                "Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description","Allocation Item Desc (YTD)","Category"]
     _ym_cols = [c for c in _ym_cols if c in _ym_detail.columns]
     _ym_detail = _ym_detail[_ym_cols].rename(columns={"_dep_gid": "deposit_gid"})
 
@@ -998,6 +1053,8 @@ if run_btn:
         if not oop_refunds.empty:
             cols = [c for c in ["deposit_gid","_parsed_date", pp_txn_col, pp_item_title_col, pp_src_col, pp_gross_col, pp_fee_col, pp_net_col] if c in oop_refunds.columns]
             oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}).to_excel(writer, sheet_name="Out-of-Period Refunds (Review)", index=False, columns=cols)
+        if not refunds_df.empty:
+            refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
 
         # Apply currency format to "money-like" columns on every sheet
         wb = writer.book
@@ -1019,6 +1076,8 @@ if run_btn:
             format_money_cols(deferral_df, "Deferral Schedule")
         if not oop_refunds.empty:
             format_money_cols(oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}), "Out-of-Period Refunds (Review)")
+        if not refunds_df.empty:
+            format_money_cols(refunds_df, "Refunds")
 
     st.success("Reconciliation complete.")
     st.dataframe(balance_df)
