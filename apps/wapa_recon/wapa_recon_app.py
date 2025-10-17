@@ -374,6 +374,79 @@ if run_btn:
         "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col, ym_alloc_item_desc_col, ym_category_col
     ] if c]
     ppym = transactions.merge(
+
+# --- Build a set of registration price points from YM to help classify "Payment for Invoice" rows ---
+reg_price_points = set()
+
+dues_price_points = set([165.00, 175.00, 50.00, 99.00])  # known WAPA dues price points (includes auto-renew + student promo)
+price_to_dues_acct = {}
+try:
+    if not ym.empty:
+        _cand = ym.copy()
+        # Normalize text
+        cat_norm = (_cand[ym_category_col].astype(str).str.lower() if ym_category_col in _cand.columns else "")
+        desc_norm = (_cand[ym_item_desc_col].astype(str).str.lower() if ym_item_desc_col in _cand.columns else "")
+        dues_like = (
+            (cat_norm.str.contains(r"\bmember|membership\b", na=False)) |
+            (desc_norm.str.contains(r"fellow|member|affiliate|sustaining|student|organizational|dues", na=False))
+        )
+        price_col_guess = None
+        for guess in ["Amount","amount","Price","price","Charge","charge","Gross","gross"]:
+            if guess in _cand.columns:
+                price_col_guess = guess
+                break
+        if price_col_guess is not None:
+            vals = _cand.loc[dues_like, [price_col_guess]].copy()
+            vals[price_col_guess] = pd.to_numeric(vals[price_col_guess], errors="coerce")
+            vals = vals.dropna()
+            for v in vals[price_col_guess].tolist():
+                try:
+                    vv = float(round(v, 2))
+                    if vv != 0:
+                        dues_price_points.add(vv)
+                except Exception:
+                    pass
+        # Map price -> GL account when available
+        if ym_gl_code_col in _cand.columns and price_col_guess is not None:
+            gls = _cand.loc[dues_like, [price_col_guess, ym_gl_code_col]].copy()
+            gls[price_col_guess] = pd.to_numeric(gls[price_col_guess], errors="coerce")
+            gls = gls.dropna()
+            for _, r in gls.iterrows():
+                try:
+                    vv = float(round(r[price_col_guess], 2))
+                    acct = str(r[ym_gl_code_col]).strip()
+                    if vv and acct:
+                        price_to_dues_acct[vv] = acct
+                except Exception:
+                    pass
+except Exception:
+    pass
+
+try:
+    # Use YM rows where category or item description suggests registration-like charges
+    if not ym.empty:
+        _cand = ym.copy()
+        # Normalize text columns safely
+        cand_cat = (_cand[ym_category_col].astype(str).str.lower() if ym_category_col in _cand.columns else "")
+        cand_desc = (_cand[ym_item_desc_col].astype(str).str.lower() if ym_item_desc_col in _cand.columns else "")
+        reg_like = (
+            (cand_cat.str.contains(r"registration|conference|meeting|cme|ticket", na=False)) |
+            (cand_desc.str.contains(r"registration|conference|meeting|cme|ticket", na=False))
+        )
+        price_col_guess = None
+        for guess in ["Amount", "amount", "Price", "price", "Charge", "charge", "Gross", "gross"]:
+            if guess in _cand.columns:
+                price_col_guess = guess
+                break
+        if price_col_guess is not None:
+            reg_vals = _cand.loc[reg_like, price_col_guess]
+            # coerce to float, drop NaNs and zeros, round to cents
+            reg_vals = pd.to_numeric(reg_vals, errors="coerce").dropna()
+            reg_vals = reg_vals[reg_vals.abs() > 0]
+            reg_price_points = set(float(round(v, 2)) for v in reg_vals.tolist())
+except Exception:
+    reg_price_points = set()
+
         ym[join_cols],
         left_on="_pp_txn_key",
         right_on="_ym_ref_key",
@@ -1319,7 +1392,33 @@ if run_btn:
             return any(h in name for h in hints)
     out_buf = io.BytesIO()
 
-    with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
+    
+# Build "Refunds & Unmapped" review table
+refunds_unmapped_df = pd.DataFrame()
+try:
+    parts = []
+    if 'refunds_df' in locals() and not refunds_df.empty:
+        r = refunds_df.copy()
+        r["_bucket"] = "Refund"
+        parts.append(r)
+    if 'inv_unmapped' in locals() and isinstance(inv_unmapped, pd.DataFrame) and not inv_unmapped.empty:
+        u = inv_unmapped.copy()
+        u_cols = ["_dep_gid", pp_date_col, pp_txn_col, item_title_col, pp_gross_col, pp_fee_col, pp_net_col]
+        u_cols = [c for c in u_cols if c in u.columns]
+        if u_cols:
+            u = u[u_cols]
+        u["_bucket"] = "Unmapped (Invoice-only)"
+        parts.append(u)
+    if parts:
+        refunds_unmapped_df = pd.concat(parts, ignore_index=True)
+except Exception:
+    refunds_unmapped_df = pd.DataFrame()
+with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
+
+        # ---- Combined review tab ----
+        if not refunds_unmapped_df.empty:
+            refunds_unmapped_df.to_excel(writer, sheet_name="Refunds & Unmapped", index=False)
+
         
         # ---- NEW first two tabs ----
         if not refunds_df.empty:
