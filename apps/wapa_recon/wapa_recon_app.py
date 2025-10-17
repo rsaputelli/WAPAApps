@@ -1456,7 +1456,14 @@ if run_btn:
     out_buf = io.BytesIO()
 
     # --- Build dynamic output filename based on selected date ---
-    date_str = as_of_date.strftime("%Y.%m.%d")
+    from datetime import timedelta
+
+    # Compute the last day of the selected month
+    next_month = (recon_anchor.replace(day=28) + timedelta(days=4)).replace(day=1)
+    last_day_of_month = next_month - timedelta(days=1)
+
+    # Use that for the filename
+    date_str = last_day_of_month.strftime("%Y.%m.%d")
     out_filename = f"{date_str} WAPA PayPal and YM Recon.xlsx"
 
     with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
@@ -1464,7 +1471,6 @@ if run_btn:
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
         _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
-
             
         # ---- NEW first two tabs ----
         if not refunds_df.empty:
