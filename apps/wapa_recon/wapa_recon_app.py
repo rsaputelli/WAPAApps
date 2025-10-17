@@ -1555,9 +1555,9 @@ if run_btn:
         except Exception:
             pass
 
-# Save workbook bytes and mark run complete (still inside the 'with' block)
-st.session_state.xlsx_bytes = out_buf.getvalue()
-st.session_state.did_run = True
+    # Save workbook bytes and mark run complete (still inside the 'with' block)
+    st.session_state.xlsx_bytes = out_buf.getvalue()
+    st.session_state.did_run = True
 
 
 # Persist dataframes for safe UI rendering across reruns
