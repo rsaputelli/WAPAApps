@@ -1583,7 +1583,7 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
     _anchor = pd.to_datetime(recon_anchor)
     run_dt = (_anchor + pd.offsets.MonthEnd(0)).strftime("%Y.%m.%d")
 
-        st.download_button(
+    st.download_button(
         label="Download Excel Workbook",
         data=st.session_state.xlsx_bytes,
         file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
