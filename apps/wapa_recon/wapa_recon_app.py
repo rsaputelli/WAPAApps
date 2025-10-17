@@ -1467,43 +1467,91 @@ if run_btn:
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
         # --- Excel-formula TOTALS for Consolidated JE (Single Entry) and JE Balance Check ---
-        def _col_letter(i: int) -> str:
+        def _col_letter(i):
             s = ""
             i += 1
             while i:
-                i, r = divmod(i - 1, 26)
+                i, r = divmod(i-1, 26)
                 s = chr(65 + r) + s
             return s
         
         # Consolidated JE (Single Entry) totals
         ws_cje = writer.sheets.get("Consolidated JE (Single Entry)")
         if ws_cje is not None and 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
-            n = len(consolidated_je)
-            total_row = n + 1
-            ws_cje.write(total_row, 0, "TOTAL")
-            for col_name in ("Debit", "Credit"):
-                if col_name in consolidated_je.columns:
-                    cidx = consolidated_je.columns.get_loc(col_name)
-                    colL = _col_letter(cidx)
-                    ws_cje.write_formula(total_row, cidx, f"=SUM({colL}2:{colL}{total_row})")
+            _last_row = len(consolidated_je) + 1  # Excel row index for last data row (1-based)
+            ws_cje.write(_last_row, 0, "TOTAL")
+            for _col_name in ["Debit", "Credit"]:
+                if _col_name in consolidated_je.columns:
+                    _cidx = consolidated_je.columns.get_loc(_col_name)
+                    _colL = _col_letter(_cidx)
+                    ws_cje.write_formula(_last_row, _cidx, "=SUM(" + _colL + "2:" + _colL + str(_last_row) + ")")
         
         # JE Balance Check totals
         ws_bal = writer.sheets.get("JE Balance Check")
         if ws_bal is not None and 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
-            n = len(balance_df)
-            total_row = n + 1
-            ws_bal.write(total_row, 0, "TOTAL")
-            for col_name in ("Debits", "Credits"):
-                if col_name in balance_df.columns:
-                    cidx = balance_df.columns.get_loc(col_name)
-                    colL = _col_letter(cidx)
-                    ws_bal.write_formula(total_row, cidx, f"=SUM({colL}2:{colL}{total_row})")
-            if all(c in balance_df.columns for c in ("Debits", "Credits", "Diff")):
-                d_idx = balance_df.columns.get_loc("Debits")
-                c_idx = balance_df.columns.get_loc("Credits")
-                diff_idx = balance_df.columns.get_loc("Diff")
-                dL, cL = _col_letter(d_idx), _col_letter(c_idx)
-                ws_bal.write_formula(total_row, diff_idx, f"={dL}{total_row+1}-{cL}{total_row+1}")
+            _last_row_b = len(balance_df) + 1
+            ws_bal.write(_last_row_b, 0, "TOTAL")
+            for _col_name in ["Debits", "Credits"]:
+                if _col_name in balance_df.columns:
+                    _cidx = balance_df.columns.get_loc(_col_name)
+                    _colL = _col_letter(_cidx)
+                    ws_bal.write_formula(_last_row_b, _cidx, "=SUM(" + _colL + "2:" + _colL + str(_last_row_b) + ")")
+            if all(c in balance_df.columns for c in ["Debits", "Credits", "Diff"]):
+                _d_idx = balance_df.columns.get_loc("Debits")
+                _c_idx = balance_df.columns.get_loc("Credits")
+                _diff_idx = balance_df.columns.get_loc("Diff")
+                _dL, _cL = _col_letter(_d_idx), _col_letter(_c_idx)
+                ws_bal.write_formula(_last_row_b, _diff_idx, "=" + _dL + str(_last_row_b+1) + "-" + _cL + str(_last_row_b+1))
+
+        je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
+        _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
+        if not deferral_df.empty:
+            deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
+        if not oop_refunds.empty:
+            cols = [c for c in ["deposit_gid","_parsed_date", pp_txn_col, pp_item_title_col, pp_src_col,
+                                pp_gross_col, pp_fee_col, pp_net_col] if c in oop_refunds.columns]
+            oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}).to_excel(
+                writer, sheet_name="Out-of-Period Refunds (Review)", index=False, columns=cols
+            )
+
+        # ---- formatting ----
+        wb = writer.book
+        cur = wb.add_format({"num_format": "$#,##0.00"})
+
+        def format_money_cols(df, sheet_name):
+            ws = writer.sheets[sheet_name]
+            ws.set_column(0, len(df.columns)-1, 16)
+            for i, col in enumerate(df.columns):
+                if moneyish(str(col)) or (
+                    df[col].dtype.kind in {"f","i"} and str(col).lower() not in {
+                        "deposit_gid","# paypal txns","term months","months current cy",
+                        "months next (2026)","months following (2027)"
+                    }
+                ):
+                    ws.set_column(i, i, 16, cur)
+
+        # format new tabs first
+        if not refunds_df.empty:
+            format_money_cols(refunds_df, "Refunds")
+        format_money_cols(consolidated_je, "Consolidated JE (Single Entry)")
+
+        # then existing tabs
+        format_money_cols(dep_out, "Deposit Summary")
+        format_money_cols(balance_df, "JE Balance Check")
+        format_money_cols(je_out, "JE Lines (Grouped by Deposit)")
+        format_money_cols(_ym_detail, "YM Detail (joined)")
+        if not deferral_df.empty:
+            format_money_cols(deferral_df, "Deferral Schedule")
+        if not oop_refunds.empty:
+            format_money_cols(
+                oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}),
+                "Out-of-Period Refunds (Review)"
+            )
+
+    # Save workbook bytes and mark run complete (still inside the 'with' block)
+    st.session_state.xlsx_bytes = out_buf.getvalue()
+    st.session_state.did_run = True
+
 
 # Persist dataframes for safe UI rendering across reruns
 try:
@@ -1542,40 +1590,40 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
             st.dataframe(st.session_state.deferral_df.head(200))
 
 
-# --- Add TOTAL row to Consolidated JE (Single Entry)
-try:
-    if 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
-        _tot_dr = round(float(consolidated_je.get("Debit", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        _tot_cr = round(float(consolidated_je.get("Credit", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        consolidated_je = pd.concat([
-            consolidated_je,
-            pd.DataFrame([{
-                "account": "TOTAL",
-                "Debit": _tot_dr,
-                "Credit": _tot_cr,
-                "Memo": "Check: Debits should equal Credits"
-            }])
-        ], ignore_index=True)
-except Exception as _e:
-    pass
+#--- Add TOTAL row to Consolidated JE (Single Entry)
+# try:
+    # if 'consolidated_je' in locals() and isinstance(consolidated_je, pd.DataFrame) and not consolidated_je.empty:
+        # _tot_dr = round(float(consolidated_je.get("Debit", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # _tot_cr = round(float(consolidated_je.get("Credit", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # consolidated_je = pd.concat([
+            # consolidated_je,
+            # pd.DataFrame([{
+                # "account": "TOTAL",
+                # "Debit": _tot_dr,
+                # "Credit": _tot_cr,
+                # "Memo": "Check: Debits should equal Credits"
+            # }])
+        # ], ignore_index=True)
+# except Exception as _e:
+    # pass
 
-# --- Add TOTAL row to JE Balance Check
-try:
-    if 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
-        _bdr = round(float(balance_df.get("Debits", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        _bcr = round(float(balance_df.get("Credits", pd.Series(dtype=float)).fillna(0).sum()), 2)
-        _bdiff = round(_bdr - _bcr, 2)
-        balance_df = pd.concat([
-            balance_df,
-            pd.DataFrame([{
-                "deposit_gid": "TOTAL",
-                "Debits": _bdr,
-                "Credits": _bcr,
-                "Diff": _bdiff
-            }])
-        ], ignore_index=True)
-except Exception as _e:
-    pass
+#--- Add TOTAL row to JE Balance Check
+# try:
+    # if 'balance_df' in locals() and isinstance(balance_df, pd.DataFrame) and not balance_df.empty:
+        # _bdr = round(float(balance_df.get("Debits", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # _bcr = round(float(balance_df.get("Credits", pd.Series(dtype=float)).fillna(0).sum()), 2)
+        # _bdiff = round(_bdr - _bcr, 2)
+        # balance_df = pd.concat([
+            # balance_df,
+            # pd.DataFrame([{
+                # "deposit_gid": "TOTAL",
+                # "Debits": _bdr,
+                # "Credits": _bcr,
+                # "Diff": _bdiff
+            # }])
+        # ], ignore_index=True)
+# except Exception as _e:
+    # pass
 
 
     # --- Add Excel-formula totals for JE sheets ---
