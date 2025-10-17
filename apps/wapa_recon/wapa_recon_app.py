@@ -1111,6 +1111,33 @@ if run_btn:
         balance_df["Diff"] = (balance_df["Debits"] - balance_df["Credits"]).round(2)
     else:
         balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
+    # ---------- NEW TAB 1: Refunds (YM Col N contains 'Refund')
+    # (You already build refunds_df earlier — this just ensures it always exists.)
+    if "refunds_df" not in locals():
+        refunds_df = pd.DataFrame()
+
+    # ---------- NEW TAB 2: Consolidated JE (single multi-line entry by account)
+    if not "je_out" in locals():
+        je_out = pd.DataFrame(columns=["account","Debit","Credit"])
+
+    if not je_out.empty:
+        _dr = je_out[["account","Debit"]].dropna(subset=["Debit"]).copy()
+        _cr = je_out[["account","Credit"]].dropna(subset=["Credit"]).copy()
+
+        totals = (
+            _dr.groupby("account", as_index=True)["Debit"].sum().to_frame()
+              .merge(_cr.groupby("account", as_index=True)["Credit"].sum(), how="outer")
+              .fillna(0.0)
+              .reset_index()
+        )
+        # Clean / drop zero rows
+        totals["Debit"]  = totals["Debit"].astype(float).round(2)
+        totals["Credit"] = totals["Credit"].astype(float).round(2)
+        consolidated_je = totals.loc[~((totals["Debit"] == 0) & (totals["Credit"] == 0))].copy()
+        # Optional memo column for downstream export
+        consolidated_je["Memo"] = "Consolidated JE — combine with Bank & Fees as one entry"
+    else:
+        consolidated_je = pd.DataFrame(columns=["account","Debit","Credit","Memo"])
 
     # Deposit Summary output (now includes Bank Deposit Date)
     dep_out = deposit_summary.reset_index().rename(columns={"_dep_gid": "deposit_gid"})[[
@@ -1162,6 +1189,53 @@ if run_btn:
 
     out_buf = io.BytesIO()
     with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
+        # ---- NEW first two tabs ----
+        if not refunds_df.empty:
+            refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
+
+        consolidated_je.to_excel(writer, sheet_name="Consolidated JE (Single Entry)", index=False)
+        
+        # Write sheets
+        dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
+        balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
+        je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
+        _ym_detail.to_excel(writer, sheet_name="YM Detail (joined)", index=False)
+        if not deferral_df.empty:
+            deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
+        if not oop_refunds.empty:
+            cols = [c for c in ["deposit_gid","_parsed_date", pp_txn_col, pp_item_title_col, pp_src_col, pp_gross_col, pp_fee_col, pp_net_col] if c in oop_refunds.columns]
+            oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}).to_excel(writer, sheet_name="Out-of-Period Refunds (Review)", index=False, columns=cols)
+        if not refunds_df.empty:
+            refunds_df.to_excel(writer, sheet_name="Refunds", index=False)
+
+        # Apply currency format to "money-like" columns on every sheet
+        wb = writer.book
+        cur = wb.add_format({"num_format": "$#,##0.00"})
+
+        def format_money_cols(df, sheet_name):
+            ws = writer.sheets[sheet_name]
+            # set reasonable column widths
+            ws.set_column(0, len(df.columns)-1, 16)
+            for i, col in enumerate(df.columns):
+                if moneyish(str(col)) or (df[col].dtype.kind in {"f","i"} and str(col).lower() not in {"deposit_gid","# paypal txns","term months","months current cy","months next (2026)","months following (2027)"}):
+                    ws.set_column(i, i, 16, cur)
+        # format new tabs first
+        if not refunds_df.empty:
+            format_money_cols(refunds_df, "Refunds")
+        format_money_cols(consolidated_je, "Consolidated JE (Single Entry)")
+        format_money_cols(dep_out, "Deposit Summary")
+        format_money_cols(balance_df, "JE Balance Check")
+        format_money_cols(je_out, "JE Lines (Grouped by Deposit)")
+        format_money_cols(_ym_detail, "YM Detail (joined)")
+        if not deferral_df.empty:
+            format_money_cols(deferral_df, "Deferral Schedule")
+        if not oop_refunds.empty:
+            format_money_cols(oop_refunds.rename(columns={"_parsed_date":"Transaction Date"}), "Out-of-Period Refunds (Review)")
+        if not refunds_df.empty:
+            format_money_cols(refunds_df, "Refunds")
+
+    st.success("Reconciliation complete.")
+    st.dataframe(balance_df)        
         # Write sheets
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
