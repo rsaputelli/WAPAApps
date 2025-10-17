@@ -405,8 +405,8 @@ if run_btn:
     for i, r in withdrawals.iterrows():
         wd_dt  = pd.to_datetime(r.get(pp_date_col), errors="coerce")
         bnk_dt = pd.to_datetime(r.get("_wd_bank_post_date"), errors="coerce")
-        in_month_by_pp  = pd.notna(wd_dt)  and wd_dt.between(recon_start, recon_end, inclusive="both")
-        in_month_by_bank= pd.notna(bnk_dt) and bnk_dt.between(recon_start, recon_end, inclusive="both")
+        in_month_by_pp   = (pd.notna(wd_dt)  and (wd_dt >= recon_start) and (wd_dt <= recon_end))
+        in_month_by_bank = (pd.notna(bnk_dt) and (bnk_dt >= recon_start) and (bnk_dt <= recon_end))
         wd_flags.append(in_month_by_pp or in_month_by_bank)
     withdrawals["_wd_in_selected_month"] = wd_flags
 
