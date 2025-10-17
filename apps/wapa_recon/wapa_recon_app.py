@@ -1186,14 +1186,13 @@ if run_btn:
             "sum", "calc", "variance"
         ]
         return any(h in name for h in hints)
-# ---- safety: make sure these DataFrames always exist before writing Excel
+# ---- safety: make sure all output DataFrames exist before Excel writing ----
 if "refunds_df" not in locals():
     refunds_df = pd.DataFrame()
 
 if "je_out" not in locals():
     je_out = pd.DataFrame(columns=["deposit_gid","date","account","description","Debit","Credit","source"])
 
-# If consolidated_je wasn't built earlier, compute it now from je_out
 if "consolidated_je" not in locals():
     if not je_out.empty:
         _dr = je_out[["account","Debit"]].dropna(subset=["Debit"]).copy()
@@ -1210,6 +1209,31 @@ if "consolidated_je" not in locals():
         consolidated_je["Memo"] = "Consolidated JE — single multi-line entry"
     else:
         consolidated_je = pd.DataFrame(columns=["account","Debit","Credit","Memo"])
+
+# Always define dep_out and _ym_detail because we always write those sheets
+if "dep_out" not in locals():
+    dep_out = pd.DataFrame(columns=[
+        "deposit_gid","PayPal Withdrawal Date","Bank Deposit Date","Withdrawal Gross",
+        "Withdrawal Fee","Withdrawal Net","# PayPal Txns","Sum Gross (Txns)",
+        "Sum Fees (Txns)","Sum Net (Txns)","Calc Net (Gross-Fees)","Variance vs Withdrawal Net"
+    ])
+
+if "_ym_detail" not in locals():
+    _ym_detail = pd.DataFrame(columns=[
+        "deposit_gid","TransactionID","Item Descriptions","GL Codes","Allocation",
+        "Dues Receipt Date (col Z)","Effective Receipt Month","Membership",
+        "Payment Description","Allocation Item Desc (YTD)","Category"
+    ])
+
+# Others are conditionally written; keep them defined anyway
+if "oop_refunds" not in locals():
+    oop_refunds = pd.DataFrame()
+
+if "deferral_df" not in locals():
+    deferral_df = pd.DataFrame()
+
+if "balance_df" not in locals():
+    balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
 
 out_buf = io.BytesIO()
 
