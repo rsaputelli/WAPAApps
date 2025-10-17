@@ -8,7 +8,7 @@
 # ✔ 12-mo: current year → 410x; remainder → 210x (2026)
 # ✔ 24-mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
 # ✔ DISCOUNTS ignored via YM Payment Description / Item Description
-# ✔ VAT → 4314
+# ✔ VAT → 4314 · Offset of Credit Card Trans Fees (stronger detection)
 # ✔ PAC donations → 2202 (robust detection + PAC Detail tab)
 
 import io
@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="WAPA Recon (JE grouped + Deferrals + PAC)", layout="wide")
+st.set_page_config(page_title="WAPA Recon (JE grouped + Deferrals + PAC + VAT)", layout="wide")
 
 # ------------------------- Config -------------------------
 BANK_GL = "1002 · TD Bank Checking x6455"
@@ -65,7 +65,7 @@ DEF_MEMBERSHIP_DEFAULT_NEXT = "2100 · Deferred Dues (Next FY)"
 DEF_MEMBERSHIP_DEFAULT_FOLLOW = "2100 · Deferred Dues (Following FY)"
 
 PAC_LIABILITY          = "2202 · Due to WAPA PAC"
-VAT_OFFSET_INCOME      = "4314 · Fall Conference CC Fee Offset"
+VAT_OFFSET_INCOME      = "4314 · Offset of Credit Card Trans Fees"  # updated label
 
 # ------------------------- Helpers -------------------------
 def norm_text(s: str) -> str:
@@ -147,7 +147,8 @@ def is_discount_text(s: str) -> bool:
 
 def is_vat_text(s: str) -> bool:
     d = str(s or "").lower()
-    return ("tax" in d) or ("vat" in d)
+    # cover variations: tax, vat, cc fee offset, processing fee offset
+    return ("tax" in d) or ("vat" in d) or ("cc fee offset" in d) or ("credit card fee offset" in d) or ("processing fee offset" in d)
 
 def is_pac_text(s: str) -> bool:
     s = str(s or "").lower()
@@ -160,7 +161,7 @@ def is_pac_line(item_desc: str, gl_code: str, payment_desc: str) -> bool:
     return is_pac_text(item_desc) or is_pac_text(payment_desc) or ("pac" in g)
 
 # ------------------------- UI -------------------------
-st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals (12/24 mo) + PAC")
+st.title("WAPA PayPal ↔ YM ↔ Bank — JE grouped + Deferrals (12/24 mo) + PAC + VAT")
 
 st.markdown("""
 Upload CSVs (any column order is OK; headers auto-detected):
@@ -175,7 +176,8 @@ Upload CSVs (any column order is OK; headers auto-detected):
 - 12-month: current-year months recognized; remainder → **210x (labeled 2026)** by member type
 - 24-month: current-year months recognized; **12 months → 210x (2026)**; remaining months → **212x (2027)**
 - **Discount** rows ignored (via Payment Description / Item Description).
-- **PAC** donations credited to **2202 · Due to WAPA PAC** (detected via GL Code 2202 or text in Item/Payment Description).
+- **PAC** donations credited to **2202 · Due to WAPA PAC**.
+- **VAT / CC fee offset** credited to **4314 · Offset of Credit Card Trans Fees**.
 """)
 
 pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
@@ -252,7 +254,7 @@ if run_btn:
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
-    # Build pp↔ym join frame with the columns we need (include Payment Description for discounts + PAC)
+    # Build pp↔ym join frame with the columns we need (include Payment Description for discounts + PAC/VAT)
     join_cols = [c for c in [ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col, "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col] if c]
     ppym = transactions.merge(
         ym[join_cols],
@@ -303,9 +305,11 @@ if run_btn:
             # ignore discounts outright
             if is_discount_text(pay_desc) or is_discount_text(item_desc):
                 continue
-
-            # exclude PAC rows entirely from deferral schedule
+            # exclude PAC rows
             if is_pac_line(item_desc, gl_code, pay_desc):
+                continue
+            # exclude VAT/fee-offset rows from deferral
+            if is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower()):
                 continue
 
             # membership dues trigger: membership present AND item description mentions "dues"
@@ -454,18 +458,10 @@ if run_btn:
                 # PAC
                 if is_pac_line(item_desc, gl_code, pay_desc):
                     pac_sum += alloc
-                    pac_detail_rows.append({
-                        "deposit_gid": dep_gid,
-                        "TransactionID": ref_key,
-                        "Item Description": item_desc,
-                        "Payment Description": pay_desc,
-                        "GL Code": gl_code,
-                        "Amount": round(alloc, 2),
-                    })
                     continue
 
-                # VAT Offset
-                if is_vat_text(item_desc):
+                # VAT Offset (detect by text or GL 4314)
+                if is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower()):
                     vat_sum += alloc
                     continue
 
@@ -506,7 +502,7 @@ if run_btn:
                     "date": None,
                     "line_type": "CREDIT",
                     "account": VAT_OFFSET_INCOME,
-                    "description": "Tax/VAT offset",
+                    "description": "Tax/VAT / CC Fee Offset",
                     "amount": round(vat_sum, 2),
                     "source": "YM Allocations",
                 })
@@ -612,9 +608,6 @@ if run_btn:
     else:
         balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
 
-    # --- PAC detail table (for audit) ---
-    pac_detail_df = pd.DataFrame(pac_detail_rows)
-
     # --- Deposit Summary output ---
     dep_out = deposit_summary.reset_index().rename(columns={"_dep_gid": "deposit_gid"})[[
         "deposit_gid", "deposit_date", "withdrawal_gross", "withdrawal_fee", "withdrawal_net",
@@ -638,8 +631,6 @@ if run_btn:
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
         je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
-        if not pac_detail_df.empty:
-            pac_detail_df.to_excel(writer, sheet_name="PAC Detail", index=False)
 
         # Detail tabs for review
         ppym.rename(columns={
@@ -662,7 +653,7 @@ if run_btn:
     st.download_button(
         label="Download Excel Workbook",
         data=out_buf.getvalue(),
-        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC.xlsx",
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_VAT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -672,7 +663,3 @@ if run_btn:
     if not deferral_df.empty:
         with st.expander("Preview: Deferral Schedule (first 200 rows)"):
             st.dataframe(deferral_df.head(200))
-
-    if not pac_detail_df.empty:
-        with st.expander("PAC Detail (first 200 rows)"):
-            st.dataframe(pac_detail_df.head(200))
