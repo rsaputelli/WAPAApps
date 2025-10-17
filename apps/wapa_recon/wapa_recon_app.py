@@ -707,7 +707,7 @@ if run_btn:
                 "Defer 2027 (→ 210x)": amt_follow,
                 "Rev Account (410x)": (glnum_to_rev_label(pick_410_from_gl(gl_code)) or REV_DUES_BY_TYPE.get(mt, REV_MEMBERSHIP_DEFAULT)),
                 "Defer 2026 Acct (212x)": DEFER_212_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_NEXT),
-                "Defer 2027 Acct (210x)": DEFER_210_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_FOLLOW), DEF_MEMBERSHIP_DEFAULT_FOLLOW),
+                "Defer 2027 Acct (210x)": DEFER_210_BY_TYPE.get(mt, DEF_MEMBERSHIP_DEFAULT_FOLLOW),
             })
 
     deferral_df = pd.DataFrame(deferral_rows)
@@ -803,6 +803,9 @@ if run_btn:
             dep_gid = int(dep_gid) if not pd.isna(dep_gid) else None
 
             pac_sum = 0.0
+            vat_dues_sum = 0.0
+            vat_other_sum = 0.0
+            vat_sum = 0.0  # legacy total for compatibility
             vat_dues_sum = 0.0
             vat_other_sum = 0.0
             vat_sum = 0.0
@@ -901,18 +904,6 @@ if run_btn:
                     "amount": round(vat_other_sum, 2),
                     "source": "YM Allocations",
                 })
-
-            if vat_sum != 0:
-                je_rows.append({
-                    "deposit_gid": dep_gid,
-                    "date": None,
-                    "line_type": "CREDIT",
-                    "account": VAT_OFFSET_INCOME,
-                    "description": "Tax/VAT / CC Fee Offset",
-                    "amount": round(vat_sum, 2),
-                    "source": "YM Allocations",
-                })
-
             if mem_recognize != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
