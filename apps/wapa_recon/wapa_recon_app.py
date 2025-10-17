@@ -1321,9 +1321,9 @@ if run_btn:
                 "Out-of-Period Refunds (Review)"
             )
 
-# Save workbook bytes and mark run complete (still inside the 'with' block)
-st.session_state.xlsx_bytes = out_buf.getvalue()
-st.session_state.did_run = True
+    # Save workbook bytes and mark run complete (still inside the 'with' block)
+    st.session_state.xlsx_bytes = out_buf.getvalue()
+    st.session_state.did_run = True
 
 # --- End of Excel writing block (flush left below) ---
 if st.session_state.did_run and st.session_state.xlsx_bytes:
