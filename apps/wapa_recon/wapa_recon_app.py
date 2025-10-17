@@ -586,42 +586,74 @@ if run_btn:
                     "source": "YM Allocations",
                 })
 
-    # 4) PAC donations that appear only in PayPal (not in YM)
-    if pp_src_col or pp_item_title_col:
-        # Build a text field concatenating available PP text columns
-        pp_text_cols = [c for c in [pp_src_col, pp_item_title_col, pp_date_col] if c]
-        if pp_txn_col:
-            pp["_pp_txn_key"] = pp[pp_txn_col].astype(str).str.strip()
-        else:
-            pp["_pp_txn_key"] = ""
-        pac_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna())
-        if matched_txns:
-            pac_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
-        if pp_text_cols:
-            text_any = pp[pp_text_cols[0]].astype(str)
-            for c in pp_text_cols[1:]:
-                text_any = text_any.str.cat(pp[c].astype(str), sep=" | ")
-            pp["_pp_pac_text"] = text_any.str.contains("pac|political action|wapa pac", case=False, na=False)
-            pac_only = pp.loc[pac_mask & pp["_pp_pac_text"]].copy()
-            if not pac_only.empty and pp_gross_col in pac_only.columns:
-                pac_add = (
-                    pac_only.groupby("_dep_gid")[pp_gross_col]
-                    .sum()
-                    .reset_index()
-                    .rename(columns={pp_gross_col: "pac_amt"})
-                )
-                for _, r in pac_add.iterrows():
-                    if float(r["pac_amt"] or 0) == 0:
-                        continue
-                    je_rows.append({
-                        "deposit_gid": int(r["_dep_gid"]),
-                        "date": None,
-                        "line_type": "CREDIT",
-                        "account": PAC_LIABILITY,
-                        "description": "PAC Donation (PayPal direct)",
-                        "amount": round(float(r["pac_amt"]), 2),
-                        "source": "PayPal PAC (unlinked)",
-                    })
+    # 4) PAC donations that appear only in PayPal (not in YM) — Col O = Item Title ("Online+Donation+(WAPA+PAC)")
+    # This version normalizes "Item Title" so patterns like "Online+Donation+(WAPA+PAC)" are detected reliably,
+    # and it still avoids double-counting anything already matched to YM by Transaction ID.
+    import re
+    
+    # Prefer the known Item Title column if present; otherwise, fall back to finding it case-insensitively.
+    item_title_col = None
+    if 'pp_item_title_col' in locals() and pp_item_title_col and pp_item_title_col in pp.columns:
+        item_title_col = pp_item_title_col
+    else:
+        for c in pp.columns:
+            if str(c).strip().lower() == "item title":
+                item_title_col = c
+                break
+    
+    # Build PP txn key (for excluding rows already matched to YM by Transaction ID)
+    if pp_txn_col and pp_txn_col in pp.columns:
+        pp["_pp_txn_key"] = pp[pp_txn_col].astype(str).str.strip()
+    else:
+        pp["_pp_txn_key"] = ""
+    
+    # Eligible PP rows: non-withdrawals that belong to a deposit group
+    pac_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna())
+    if matched_txns:
+        pac_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
+    
+    # Normalize Item Title for robust matching: "+" and punctuation -> space, lowercase, collapse spaces
+    if item_title_col:
+        pp["_pp_item_title_norm"] = (
+            pp[item_title_col]
+            .astype(str)
+            .fillna("")
+            .str.replace(r"[+_]", " ", regex=True)        # plus/underscores → space
+            .str.replace(r"[^\w\s]", " ", regex=True)     # other punctuation → space
+            .str.lower()
+            .str.replace(r"\s+", " ", regex=True)         # collapse multiple spaces
+            .str.strip()
+        )
+    else:
+        pp["_pp_item_title_norm"] = ""
+    
+    # PAC keyword detection on normalized Item Title
+    # accepts "wapa pac", "political action", or a standalone "pac"
+    pac_re = r"(?:\bwapa\s+pac\b|\bpolitical\s+action\b|\bpac\b)"
+    
+    pp["_pp_pac_only"] = pac_mask & pp["_pp_item_title_norm"].str.contains(pac_re, regex=True, na=False)
+    pac_only = pp.loc[pp["_pp_pac_only"]].copy()
+    
+    if not pac_only.empty and (pp_gross_col in pac_only.columns):
+        pac_add = (
+            pac_only.groupby("_dep_gid")[pp_gross_col]
+            .sum()
+            .reset_index()
+            .rename(columns={pp_gross_col: "pac_amt"})
+        )
+        for _, r in pac_add.iterrows():
+            amt = float(r["pac_amt"] or 0)
+            if amt == 0:
+                continue
+            je_rows.append({
+                "deposit_gid": int(r["_dep_gid"]),
+                "date": None,
+                "line_type": "CREDIT",
+                "account": PAC_LIABILITY,  # e.g., "2202 · Due to WAPA PAC"
+                "description": "PAC Donation (PayPal Item Title)",
+                "amount": round(amt, 2),
+                "source": "PayPal PAC (Item Title only)",
+            })
 
     je_df = pd.DataFrame(je_rows)
 
