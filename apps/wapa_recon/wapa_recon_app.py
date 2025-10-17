@@ -897,54 +897,54 @@ if run_btn:
         preview_cols = [c for c in preview_cols if c in pac_only.columns]
         st.dataframe(pac_only[preview_cols].sort_values(["_dep_gid"]).head(500))
 
-    # 5a) PayPal-only Registration payments → credit default 4302 (runs BEFORE invoice fallback)
-reg_mask = (
-    (~pp["_is_withdrawal"]) &
-    (pp["_dep_gid"].notna()) &
-    (pp["_child_in_window"]))
-if matched_txns:
-    reg_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
-
-if item_title_col:
-    pp["_pp_item_title_norm_reg"] = (
-        pp[item_title_col]
-          .astype(str).fillna("")
-          .str.replace(r"[+_]", " ", regex=True)
-          .str.replace(r"[^\w\s]", " ", regex=True)
-          .str.lower()
-          .str.replace(r"\s+", " ", regex=True)
-          .str.strip()
+                    # 5a) PayPal-only Registration payments → credit default 4302 (runs BEFORE invoice fallback)
+    reg_mask = (
+        (~pp["_is_withdrawal"]) &
+        (pp["_dep_gid"].notna()) &
+        (pp["_child_in_window"])
     )
-else:
-    pp["_pp_item_title_norm_reg"] = ""
+    if matched_txns:
+        reg_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
 
-reg_kw = r"(registration|conference|cme|meeting\s*registration|attendee)"
-pp["_pp_registration_only"] = reg_mask & pp["_pp_item_title_norm_reg"].str.contains(reg_kw, regex=True, na=False)
-pp_reg_only = pp.loc[pp["_pp_registration_only"]].copy()
+    if item_title_col:
+        pp["_pp_item_title_norm_reg"] = (
+            pp[item_title_col]
+              .astype(str).fillna("")
+              .str.replace(r"[+_]", " ", regex=True)
+              .str.replace(r"[^\w\s]", " ", regex=True)
+              .str.lower()
+              .str.replace(r"\s+", " ", regex=True)
+              .str.strip()
+        )
+    else:
+        pp["_pp_item_title_norm_reg"] = ""
 
-if not pp_reg_only.empty and (pp_gross_col in pp_reg_only.columns):
-    reg_add = (
-        pp_reg_only.groupby("_dep_gid")[pp_gross_col]
-        .sum()
-        .reset_index()
-        .rename(columns={pp_gross_col: "reg_amt"})
-    )
-    DEFAULT_REG_ACCOUNT = "4302 · Registration Income"
-    for _, r in reg_add.iterrows():
-        amt = float(r["reg_amt"] or 0)
-        if amt:
-            je_rows.append({
-                "deposit_gid": int(r["_dep_gid"]),
-                "date": None,
-                "line_type": "CREDIT",
-                "account": DEFAULT_REG_ACCOUNT,
-                "description": "PayPal Registration (unmatched)",
-                "amount": round(amt, 2),
-                "source": "PayPal Item Title (registration keywords)",
-            })
+    reg_kw = r"(registration|conference|cme|meeting\s*registration|attendee)"
+    pp["_pp_registration_only"] = reg_mask & pp["_pp_item_title_norm_reg"].str.contains(reg_kw, regex=True, na=False)
+    pp_reg_only = pp.loc[pp["_pp_registration_only"]].copy()
 
+    if not pp_reg_only.empty and (pp_gross_col in pp_reg_only.columns):
+        reg_add = (
+            pp_reg_only.groupby("_dep_gid")[pp_gross_col]
+            .sum()
+            .reset_index()
+            .rename(columns={pp_gross_col: "reg_amt"})
+        )
+        DEFAULT_REG_ACCOUNT = "4302 · Registration Income"
+        for _, r in reg_add.iterrows():
+            amt = float(r["reg_amt"] or 0)
+            if amt:
+                je_rows.append({
+                    "deposit_gid": int(r["_dep_gid"]),
+                    "date": None,
+                    "line_type": "CREDIT",
+                    "account": DEFAULT_REG_ACCOUNT,
+                    "description": "PayPal Registration (unmatched)",
+                    "amount": round(amt, 2),
+                    "source": "PayPal Item Title (registration keywords)",
+                })
 # 5) PayPal-only "Payment for Invoice No. ####" → 99999 placeholder
-    inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_child_in_window"])
+    inv_mask = (~pp["_is_withdrawal"]) & (pp["_dep_gid"].notna()) & (pp["_child_in_window"]) & (~pp.get("_pp_registration_only", False))
     if matched_txns:
         inv_mask &= (~pp["_pp_txn_key"].isin(list(matched_txns)))
 
