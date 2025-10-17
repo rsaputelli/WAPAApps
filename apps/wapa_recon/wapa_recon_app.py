@@ -644,13 +644,7 @@ if run_btn:
                 is_vat_text(alloc_item_desc) or ("4314" in str(gl_code).lower())
             )
             if _vat_gate:
-                cat = str(category or "").lower()
-                if cat.startswith("membership") or str(gl_code).strip().startswith("410"):
-                    vat_dues_sum += alloc
-                else:
-                    vat_other_sum += alloc
-                vat_sum += alloc
-                continue
+                                continue
 
             # Membership gate for DEFERRALS ONLY:
             # Only allow if Category (M) startswith "membership" OR GL code startswith "410".
@@ -839,6 +833,10 @@ if run_btn:
                     is_vat_text(item_desc) or is_vat_text(pay_desc) or
                     is_vat_text(alloc_item_desc) or ("4314" in str(gl_code).lower())
                 ):
+                    if (ref_key in def_by_ref) or str(gl_code).strip().startswith("410"):
+                        vat_dues_sum += alloc
+                    else:
+                        vat_other_sum += alloc
                     vat_sum += alloc
                     continue
 
