@@ -1,14 +1,14 @@
 
-# wapa_recon_app_v5e.py
+# wapa_recon_app.py
 # Streamlit app for WAPA PayPal ↔ YM ↔ Bank reconciliation
 # ✔ JE Lines grouped by deposit (deposit_gid), DEBITs first
 # ✔ Split Debit / Credit columns in export
 # ✔ PayPal Fees posted as positive debits (robust to missing cols)
-# ✔ Membership deferrals using YM Column Z + mid‑month rule
-# ✔ 12‑mo: current year → 410x; remainder → 210x (2026)
-# ✔ 24‑mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
-# ✔ PAC → 2202; VAT → 4314; discounts ignored
-# Optional: per‑deposit auto‑balance line to 9999 (off by default; set AUTO_BALANCE=True)
+# ✔ Membership deferrals using YM Column Z + mid-month rule
+# ✔ 12-mo: current year → 410x; remainder → 210x (2026)
+# ✔ 24-mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
+# ✔ PAC → 2202; VAT → 4314
+# ✔ DISCOUNTS: ignore lines when YM Payment Description says "Discount" (or Item Description contains "discount")
 
 import io
 import re
@@ -141,15 +141,11 @@ def is_two_year(mem_val: str) -> bool:
     s = str(mem_val or "").lower()
     return ("2-year" in s) or ("2year" in s) or ("two year" in s) or ("24" in s and "month" in s)
 
-def is_discount(desc: str) -> bool:
-    if desc is None:
-        return False
-    return "discount" in str(desc).lower()
+def is_discount_text(s: str) -> bool:
+    return "discount" in str(s or "").lower()
 
-def is_vat(desc: str) -> bool:
-    if desc is None:
-        return False
-    d = str(desc).lower()
+def is_vat_text(s: str) -> bool:
+    d = str(s or "").lower()
     return ("tax" in d) or ("vat" in d)
 
 def is_pac_line(desc: str, gl_code: str) -> bool:
@@ -164,7 +160,7 @@ st.markdown("""
 Upload CSVs (any column order is OK; headers auto-detected):
 
 - **PayPal**: Type, Gross, Fee, Net, Transaction ID, Item Title
-- **YM Export**: Invoice/Reference, Item Description, GL Code, Allocation, **Member/Non-Member - Date Last Dues Transaction** (col Z), Membership
+- **YM Export**: Invoice/Reference, Item Description, GL Code, Allocation, **Member/Non-Member - Date Last Dues Transaction** (col Z), **Payment Description**, Membership
 - **Bank (TD)**: Date, Description, Deposit/Credit/Amount
 
 **Deferral logic**
@@ -172,7 +168,7 @@ Upload CSVs (any column order is OK; headers auto-detected):
 - Mid-month rule: payments on or before the 15th count in that month; after the 15th → next month
 - 12-month: current-year months recognized; remainder → **210x (labeled 2026)** by member type
 - 24-month: current-year months recognized; **12 months → 210x (2026)**; remaining months → **212x (2027)**
-- **PAC** credited to 2202; **VAT** credited to 4314; **Discount** rows ignored.
+- **PAC** credited to 2202; **VAT** credited to 4314; **Discount** rows ignored (via Payment Description).
 """)
 
 pp_file = st.file_uploader("PayPal CSV", type=["csv"], key="pp")
@@ -237,6 +233,7 @@ if run_btn:
     ym_alloc_col      = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])               # Q
     ym_dues_rcpt_col  = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
     ym_membership_col = find_col(ym, ["membership", "membership_type"])  # AC
+    ym_pay_desc_col   = find_col(ym, ["payment_description", "payment_descriptions", "payment_desc", "ym_payment_description"])
 
     if ym_alloc_col and ym[ym_alloc_col].dtype == object:
         ym[ym_alloc_col] = to_float(ym[ym_alloc_col])
@@ -248,8 +245,10 @@ if run_btn:
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
     ym["_ym_ref_key"] = ym[ym_ref_col].astype(str).str.strip() if ym_ref_col else ""
 
+    # Build pp↔ym join frame with the columns we need (include Payment Description for discounts)
+    join_cols = [c for c in [ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col, "_dues_rcpt", "_eff_month", ym_membership_col, ym_pay_desc_col] if c]
     ppym = transactions.merge(
-        ym[[c for c in [ym_ref_col, "_ym_ref_key", ym_item_desc_col, ym_gl_code_col, ym_alloc_col, "_dues_rcpt", "_eff_month", ym_membership_col] if c]],
+        ym[join_cols],
         left_on="_pp_txn_key",
         right_on="_ym_ref_key",
         how="left",
@@ -290,7 +289,13 @@ if run_btn:
                 continue
 
             item_desc = str(r.get(ym_item_desc_col, "") or "")
+            pay_desc = str(r.get(ym_pay_desc_col, "") or "")
             mem_str = r.get(ym_membership_col, "")
+
+            # ignore discounts outright
+            if is_discount_text(pay_desc) or is_discount_text(item_desc):
+                continue
+
             # membership dues trigger: membership field present AND item description contains "dues"
             is_membership_dues = (isinstance(mem_str, str) and mem_str.strip() != "") and ("dues" in item_desc.lower())
             if not is_membership_dues:
@@ -319,6 +324,7 @@ if run_btn:
                 "TransactionID": r.get("_ym_ref_key", ""),
                 "Membership": mem_str,
                 "Item Description": item_desc,
+                "Payment Description": pay_desc,
                 "Receipt Date (col Z)": r.get("_dues_rcpt", pd.NaT),
                 "Effective Month": eff_month,
                 "Term Months": total_months,
@@ -404,12 +410,6 @@ if run_btn:
                 "acct_212": r.get("Defer 2027 Acct (212x)") or DEF_MEMBERSHIP_DEFAULT_FOLLOW,
             }
 
-    def is_discount_row(desc: str) -> bool:
-        return is_discount(desc)
-
-    def is_vat_row(desc: str) -> bool:
-        return is_vat(desc)
-
     if not ppym.empty and ym_alloc_col:
         for dep_gid, grp in ppym.groupby("_dep_gid"):
             dep_gid = int(dep_gid) if not pd.isna(dep_gid) else None
@@ -431,17 +431,19 @@ if run_btn:
                 if alloc == 0:
                     continue
                 item_desc = str(r.get(ym_item_desc_col, "") or "")
+                pay_desc = str(r.get(ym_pay_desc_col, "") or "")
                 gl_code = str(r.get(ym_gl_code_col, "") or "")
                 ref_key = str(r.get("_ym_ref_key",""))
 
-                if is_discount_row(item_desc):
+                # Ignore discounts (either Payment Description says "Discount" or Item Description contains it)
+                if is_discount_text(pay_desc) or is_discount_text(item_desc):
                     continue
 
                 if is_pac_line(item_desc, gl_code):
                     pac_sum += alloc
                     continue
 
-                if is_vat_row(item_desc):
+                if is_vat_text(item_desc):
                     vat_sum += alloc
                     continue
 
@@ -619,8 +621,9 @@ if run_btn:
             "_dues_rcpt": "Dues Receipt Date (col Z)",
             "_eff_month": "Effective Receipt Month",
             ym_membership_col: "Membership",
-        })[[c for c in ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership"] if c in
-             ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership"]]].rename(columns={"_dep_gid":"deposit_gid"}).to_excel(writer, sheet_name="YM Detail (joined)", index=False)
+            ym_pay_desc_col: "Payment Description",
+        })[[c for c in ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"] if c in
+             ["TransactionID","Item Descriptions","GL Codes","Allocation","_dep_gid","Dues Receipt Date (col Z)","Effective Receipt Month","Membership","Payment Description"]]].rename(columns={"_dep_gid":"deposit_gid"}).to_excel(writer, sheet_name="YM Detail (joined)", index=False)
         if not deferral_df.empty:
             deferral_df.to_excel(writer, sheet_name="Deferral Schedule", index=False)
 
@@ -630,7 +633,7 @@ if run_btn:
     st.download_button(
         label="Download Excel Workbook",
         data=out_buf.getvalue(),
-        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_v5e.xlsx",
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
