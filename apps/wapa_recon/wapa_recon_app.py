@@ -146,13 +146,11 @@ def is_discount_text(s: str) -> bool:
     return "discount" in str(s or "").lower()
 
 def is_vat_text(s: str) -> bool:
-    d_raw = str(s or "").strip()
+    d_raw = str(s or '').strip()
     d = d_raw.lower()
-    nt = re.sub(r"[^a-z0-9]", "", d)
-    # Primary: "Tax/VAT" exact or punctuation-equivalent
-    if d_raw.upper() == "TAX/VAT" or d == "tax/vat" or nt in {"taxvat","vattax"}:
+    nt = re.sub(r'[^a-z0-9]', '', d)
+    if d_raw.upper() in {'TAX/VAT','TAX / VAT','TAX- VAT','TAX - VAT','TAX -VAT','TAX VAT'} or nt in {'taxvat','vattax'}:
         return True
-    # Secondary: common variants
     return ("tax" in d) or ("vat" in d) or ("cc fee offset" in d) or ("credit card fee offset" in d) or ("processing fee offset" in d)
 
 def is_pac_text(s: str) -> bool:
@@ -319,7 +317,8 @@ if run_btn:
             if is_pac_line(item_desc, gl_code, pay_desc):
                 continue
             # exclude VAT/fee-offset rows from deferral
-            if is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower()):
+            _vat_gate = is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower())
+            if _vat_gate:
                 continue
 
             # membership dues trigger: membership present AND item description mentions "dues"
@@ -469,8 +468,9 @@ if run_btn:
                     pac_sum += alloc
                     continue
 
-                # VAT Offset (by description or GL 4314)
-                if is_vat_text(item_desc) or is_vat_text(pay_desc) or ("4314" in str(gl_code).lower()):
+                # VAT Offset (by YM Item Description 'Tax/VAT' or GL 4314)
+                is_vat = is_vat_text(item_desc) or is_vat_text(pay_desc)
+                if is_vat or ("4314" in str(gl_code).lower()):
                     vat_sum += alloc
                     continue
 
