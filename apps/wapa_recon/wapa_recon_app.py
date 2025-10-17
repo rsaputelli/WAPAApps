@@ -41,8 +41,24 @@ import re
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit as st
+from PIL import Image
 
-st.set_page_config(page_title="WAPA Recon (JE grouped + Deferrals + PAC + VAT)", layout="wide")
+# --- Page setup ---
+st.set_page_config(
+    page_title=""WAPA Recon (JE grouped + Deferrals + PAC + VAT)"",
+    page_icon="logo.png",   # Uses the Lutine logo in the browser tab
+    layout="wide"
+)
+
+# --- Header with logo + title ---
+logo = Image.open("logo.png")
+col1, col2 = st.columns([1, 5])
+with col1:
+    st.image(logo, width=70)
+with col2:
+    st.markdown("<h1 style='padding-top: 10px;'>WAPA Reconciliation</h1>", unsafe_allow_html=True)
+
 
 # ------------------------- Config -------------------------
 BANK_GL = "1002 · TD Bank Checking x6455"
