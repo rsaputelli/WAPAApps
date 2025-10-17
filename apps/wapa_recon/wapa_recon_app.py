@@ -103,7 +103,8 @@ DEF_MEMBERSHIP_DEFAULT_NEXT   = "2100 · Deferred Dues (Next FY)"
 DEF_MEMBERSHIP_DEFAULT_FOLLOW = "2100 · Deferred Dues (Following FY)"
 
 PAC_LIABILITY          = "2202 · Due to WAPA PAC"
-VAT_OFFSET_INCOME      = "4314 · Offset of Credit Card Trans Fees"
+VAT_OFFSET_INCOME      = "Fall Conference Income:4314 · Offset of CC Processing Fees"
+DUES_VAT_OFFSET_INCOME = "Membership Dues:4108 · Offset of CC Processing Fees"
 UNMAPPED_REVIEW_ACCT   = "99999 · Needs Coding (Review)"
 
 # ------------------------- Helpers -------------------------
@@ -771,7 +772,8 @@ if run_btn:
             dep_gid = int(dep_gid) if not pd.isna(dep_gid) else None
 
             pac_sum = 0.0
-            vat_sum = 0.0
+            vat_dues_sum = 0.0
+            vat_other_sum = 0.0
             mem_recognize = 0.0
             mem_defer_210 = 0.0
             mem_defer_212 = 0.0
@@ -827,7 +829,7 @@ if run_btn:
             # make JE per-deposit balance precisely, by adding/subtracting the rounding to membership recognition.
             if not AUTO_BALANCE:
                 # Compute target gross from YM for this deposit (excluding discounts/pac/vat already separated).
-                ym_gross = mem_recognize + mem_defer_210 + mem_defer_212 + sum(other_rev_by_acct.values()) + pac_sum + vat_sum
+                ym_gross = mem_recognize + mem_defer_210 + mem_defer_212 + sum(other_rev_by_acct.values()) + pac_sum + vat_dues_sum + vat_other_sum
                 # Debit side per deposit is Net + Fees (handled as separate rows). Credits should sum to Gross.
                 # We won't change fee math here; we only nudge membership-recognized by <= $0.02 for rounding.
                 # (Final balance is enforced in the Balance Check anyway.)
@@ -846,14 +848,25 @@ if run_btn:
                     "source": "YM Allocations → PAC",
                 })
 
-            if vat_sum != 0:
+            if vat_dues_sum != 0:
+                je_rows.append({
+                    "deposit_gid": dep_gid,
+                    "date": None,
+                    "line_type": "CREDIT",
+                    "account": DUES_VAT_OFFSET_INCOME,
+                    "description": "Tax/VAT / CC Fee Offset (DUES)",
+                    "amount": round(vat_dues_sum, 2),
+                    "source": "YM Allocations",
+                })
+
+            if vat_other_sum != 0:
                 je_rows.append({
                     "deposit_gid": dep_gid,
                     "date": None,
                     "line_type": "CREDIT",
                     "account": VAT_OFFSET_INCOME,
                     "description": "Tax/VAT / CC Fee Offset",
-                    "amount": round(vat_sum, 2),
+                    "amount": round(vat_other_sum, 2),
                     "source": "YM Allocations",
                 })
 
