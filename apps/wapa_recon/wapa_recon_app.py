@@ -1339,6 +1339,5 @@ if st.session_state.did_run and st.session_state.xlsx_bytes:
     if not deferral_df.empty:
         with st.expander("Preview: Deferral Schedule (first 200 rows)"):
             st.dataframe(deferral_df.head(200))
-)
 
 
