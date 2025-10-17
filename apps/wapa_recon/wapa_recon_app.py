@@ -1,15 +1,14 @@
 
-# wapa_recon_app_v5d.py
+# wapa_recon_app_v5e.py
 # Streamlit app for WAPA PayPal ↔ YM ↔ Bank reconciliation
-# JE Lines grouped by deposit with Deferrals (12/24 mo) + PAC liability
-# - Uses YM column "Member/Non-Member - Date Last Dues Transaction" for receipt date (col Z in your sheet)
-# - Mid-month rule: <=15 → current month; >15 → next month
-# - 12-month dues: split current-year vs next-year (210x = 2026 labels)
-# - 24-month dues: split current-year, then 12 months to 210x (2026), remainder to 212x (2027)
-# - Membership-type mapping to 4101–4107 (revenue), 2101–2107 (2026 deferrals), 2125–2131 (2027 deferrals)
-#
-# Run:
-#   streamlit run wapa_recon_app_v5d.py
+# ✔ JE Lines grouped by deposit (deposit_gid), DEBITs first
+# ✔ Split Debit / Credit columns in export
+# ✔ PayPal Fees posted as positive debits (robust to missing cols)
+# ✔ Membership deferrals using YM Column Z + mid‑month rule
+# ✔ 12‑mo: current year → 410x; remainder → 210x (2026)
+# ✔ 24‑mo: current year → 410x; next 12 → 210x (2026); remainder → 212x (2027)
+# ✔ PAC → 2202; VAT → 4314; discounts ignored
+# Optional: per‑deposit auto‑balance line to 9999 (off by default; set AUTO_BALANCE=True)
 
 import io
 import re
@@ -21,6 +20,7 @@ st.set_page_config(page_title="WAPA Recon (JE grouped + Deferrals + PAC)", layou
 
 # ------------------------- Config -------------------------
 BANK_GL = "1002 · TD Bank Checking x6455"
+AUTO_BALANCE = False  # set True to add a 9999 balancing line per deposit
 
 # Expense routing for fees by item title
 FEE_ACCT_MEMBERSHIP = "5104 · Membership Expenses:5104 · Dues Expense"
@@ -87,10 +87,11 @@ def normalize_cols(df):
     return df
 
 def find_col(df, candidates):
+    # exact
     for c in candidates:
         if c in df.columns:
             return c
-    # fuzzy contains fallback
+    # contains/fuzzy
     for col in df.columns:
         for cand in candidates:
             if cand in col:
@@ -191,12 +192,12 @@ if run_btn:
     bank = normalize_cols(read_csv_robust(bank_file))
 
     # --- PayPal columns ---
-    pp_type_col = find_col(pp, ["type"])
-    pp_gross_col = find_col(pp, ["gross"])
-    pp_fee_col = find_col(pp, ["fee", "fees"])
-    pp_net_col = find_col(pp, ["net"])
-    pp_txn_col = find_col(pp, ["transaction_id", "transactionid", "txn_id"])
-    pp_date_col = find_col(pp, ["date", "date_time", "time", "transaction_initiation_date"])
+    pp_type_col       = find_col(pp, ["type"])
+    pp_gross_col      = find_col(pp, ["gross"])
+    pp_fee_col        = find_col(pp, ["fee", "fees"])
+    pp_net_col        = find_col(pp, ["net"])
+    pp_txn_col        = find_col(pp, ["transaction_id", "transactionid", "txn_id"])
+    pp_date_col       = find_col(pp, ["date", "date_time", "time", "transaction_initiation_date"])
     pp_item_title_col = find_col(pp, ["item_title", "item_name", "title", "product_name"])
 
     for col in [pp_gross_col, pp_fee_col, pp_net_col]:
@@ -230,18 +231,18 @@ if run_btn:
     transactions = pp.loc[(~pp["_is_withdrawal"]) & (~pp["_dep_gid"].isna())].copy()
 
     # --- YM columns ---
-    ym_ref_col = find_col(ym, ["invoice_-_reference_number", "invoice_reference_number", "reference_number", "invoice"])
-    ym_item_desc_col = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])  # N
-    ym_gl_code_col = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                 # O
-    ym_alloc_col = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])                 # Q
-    ym_dues_rcpt_col = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
+    ym_ref_col        = find_col(ym, ["invoice_-_reference_number", "invoice_reference_number", "reference_number", "invoice"])
+    ym_item_desc_col  = find_col(ym, ["item_descriptions", "item_description", "item", "item_name", "name"])  # N
+    ym_gl_code_col    = find_col(ym, ["gl_codes", "gl_code", "gl", "account", "account_code"])                 # O
+    ym_alloc_col      = find_col(ym, ["allocation", "allocated_amount", "amount", "line_total"])               # Q
+    ym_dues_rcpt_col  = find_col(ym, ["member/non-member_-_date_last_dues_transaction", "date_last_dues_transaction", "dues_paid_date", "paid_date"])
     ym_membership_col = find_col(ym, ["membership", "membership_type"])  # AC
 
     if ym_alloc_col and ym[ym_alloc_col].dtype == object:
         ym[ym_alloc_col] = to_float(ym[ym_alloc_col])
 
-    ym["_dues_rcpt"] = pd.to_datetime(ym[ym_dues_rcpt_col], errors="coerce") if ym_dues_rcpt_col else pd.NaT
-    ym["_eff_month"] = ym["_dues_rcpt"].apply(effective_receipt_month)
+    ym["_dues_rcpt"]  = pd.to_datetime(ym[ym_dues_rcpt_col], errors="coerce") if ym_dues_rcpt_col else pd.NaT
+    ym["_eff_month"]  = ym["_dues_rcpt"].apply(effective_receipt_month)
 
     # Link PP transactions to YM by TransactionID ↔ Reference
     transactions["_pp_txn_key"] = transactions[pp_txn_col].astype(str).str.strip() if pp_txn_col else ""
@@ -353,7 +354,7 @@ if run_btn:
                 "source": "Withdrawal",
             })
 
-    # 2) DR Fees by account per deposit  (robust against missing vars/cols)
+    # 2) DR Fees by account per deposit  (robust & positive)
     if (
         "pp_item_title_col" in locals() and "pp_fee_col" in locals() and
         pp_item_title_col and pp_fee_col and
@@ -364,17 +365,16 @@ if run_btn:
             (pp["_dep_gid"].notna()) &
             (pp[pp_fee_col].notna())
         ].copy()
-    
+
         fee_tx["_fee_account"] = fee_tx[pp_item_title_col].apply(choose_fee_account_from_item_title)
-    
-        # Make fees positive for debit lines and aggregate by deposit + account
-        fee_tx["_fee_amt_pos"] = fee_tx[pp_fee_col].abs()
+        fee_tx["_fee_amt_pos"] = fee_tx[pp_fee_col].abs()  # positive for debit lines
+
         fee_alloc = (
             fee_tx.groupby(["_dep_gid", "_fee_account"])["_fee_amt_pos"]
             .sum()
             .reset_index()
         )
-    
+
         for _, r in fee_alloc.iterrows():
             amt = float(r["_fee_amt_pos"] or 0.0)
             if amt == 0:
@@ -388,7 +388,6 @@ if run_btn:
                 "amount": round(amt, 2),
                 "source": "PayPal Fees",
             })
-    # else: silently skip if either column isn't available
 
     # 3) CREDIT side per deposit using YM allocations, with deferral + PAC + VAT + discounts rules
     # Build lookup from deferral_df for membership dues portions by TransactionID
@@ -438,7 +437,7 @@ if run_btn:
                 if is_discount_row(item_desc):
                     continue
 
-                if ("pac" in item_desc.lower()) or ("pac" in gl_code.lower()) or ("2202" in gl_code):
+                if is_pac_line(item_desc, gl_code):
                     pac_sum += alloc
                     continue
 
@@ -483,7 +482,7 @@ if run_btn:
                     "account": VAT_OFFSET_INCOME,
                     "description": "Tax/VAT offset",
                     "amount": round(vat_sum, 2),
-                    "source": "YM Allocations → VAT",
+                    "source": "YM Allocations",
                 })
 
             # Membership pieces
@@ -536,41 +535,56 @@ if run_btn:
 
     je_df = pd.DataFrame(je_rows)
 
-    # --- Final per-deposit balancing line (to ensure each deposit batch is in-balance)
-    # Posts any small residuals to a review account so exports can be imported cleanly.
-    RECON_VARIANCE_ACCT = "9999 · Recon Variance (Review)"
-    for dep_gid, sub in je_df.groupby("deposit_gid"):
-        deb = float(sub.loc[sub["line_type"]=="DEBIT","amount"].sum() or 0.0)
-        cred = float(sub.loc[sub["line_type"]=="CREDIT","amount"].sum() or 0.0)
-        diff = round(deb - cred, 2)
-        if abs(diff) >= 0.01:
-            # if debits > credits, we need a CREDIT; else a DEBIT
-            line_type = "CREDIT" if diff > 0 else "DEBIT"
-            je_df.loc[len(je_df)] = {
-                "deposit_gid": dep_gid,
-                "date": None,
-                "line_type": line_type,
-                "account": RECON_VARIANCE_ACCT,
-                "description": "Auto balance to zero (review)",
-                "amount": abs(diff),
-                "source": "Auto Balance",
-            }
+    # Optional auto-balance per deposit
+    if AUTO_BALANCE and not je_df.empty:
+        RECON_VARIANCE_ACCT = "9999 · Recon Variance (Review)"
+        for dep_gid, sub in je_df.groupby("deposit_gid"):
+            deb = float(sub.loc[sub["line_type"]=="DEBIT","amount"].sum() or 0.0)
+            cred = float(sub.loc[sub["line_type"]=="CREDIT","amount"].sum() or 0.0)
+            diff = round(deb - cred, 2)
+            if abs(diff) >= 0.01:
+                je_df.loc[len(je_df)] = {
+                    "deposit_gid": dep_gid,
+                    "date": None,
+                    "line_type": ("CREDIT" if diff > 0 else "DEBIT"),
+                    "account": RECON_VARIANCE_ACCT,
+                    "description": "Auto balance to zero (review)",
+                    "amount": abs(diff),
+                    "source": "Auto Balance",
+                }
 
     # Sort for readability: deposit_gid asc, DEBIT before CREDIT
-    je_df['line_order'] = je_df['line_type'].map({'DEBIT':0,'CREDIT':1}).fillna(2)
-    je_df = je_df.sort_values(['deposit_gid','line_order','account']).drop(columns=['line_order'])
-    # Sort for readability: deposit_gid asc, DEBIT before CREDIT
-    je_df['line_order'] = je_df['line_type'].map({'DEBIT':0,'CREDIT':1}).fillna(2)
-    je_df = je_df.sort_values(['deposit_gid','line_order','account']).drop(columns=['line_order'])
+    if not je_df.empty:
+        je_df["line_order"] = je_df["line_type"].map({"DEBIT": 0, "CREDIT": 1}).fillna(2)
+        je_df = je_df.sort_values(["deposit_gid","line_order","account"]).drop(columns=["line_order"])
 
-    # Balance check per deposit
-    checks = []
-    for dep_gid, sub in je_df.groupby("deposit_gid"):
-        debits = round(float(sub.loc[sub["line_type"]=="DEBIT","amount"].sum() or 0), 2)
-        credits = round(float(sub.loc[sub["line_type"]=="CREDIT","amount"].sum() or 0), 2)
-        diff = round(debits - credits, 2)
-        checks.append({"deposit_gid": dep_gid, "Debits": debits, "Credits": credits, "Diff": diff})
-    balance_df = pd.DataFrame(checks)
+    # --- Split JE amounts into separate Debit / Credit columns (presentation)
+    je_view = je_df.copy()
+    if not je_view.empty:
+        je_view["Debit"]  = np.where(je_view["line_type"]=="DEBIT",  je_view["amount"].round(2), np.nan)
+        je_view["Credit"] = np.where(je_view["line_type"]=="CREDIT", je_view["amount"].round(2), np.nan)
+    else:
+        je_view["Debit"] = np.nan
+        je_view["Credit"] = np.nan
+
+    # Nice column order for the JE export
+    je_cols = ["deposit_gid", "date", "account", "description", "Debit", "Credit", "source"]
+    je_cols = [c for c in je_cols if c in je_view.columns]
+    je_out = je_view[je_cols] if je_cols else je_view
+
+    # Balance check based on split columns
+    if not je_out.empty:
+        balance_df = (
+            je_out.groupby("deposit_gid")
+            .agg(
+                Debits = ("Debit",  lambda s: round(float(np.nansum(s)), 2)),
+                Credits= ("Credit", lambda s: round(float(np.nansum(s)), 2)),
+            )
+            .reset_index()
+        )
+        balance_df["Diff"] = (balance_df["Debits"] - balance_df["Credits"]).round(2)
+    else:
+        balance_df = pd.DataFrame(columns=["deposit_gid","Debits","Credits","Diff"])
 
     # --- Deposit Summary output ---
     dep_out = deposit_summary.reset_index().rename(columns={"_dep_gid": "deposit_gid"})[[
@@ -594,7 +608,7 @@ if run_btn:
     with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
         dep_out.to_excel(writer, sheet_name="Deposit Summary", index=False)
         balance_df.to_excel(writer, sheet_name="JE Balance Check", index=False)
-        je_df.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
+        je_out.to_excel(writer, sheet_name="JE Lines (Grouped by Deposit)", index=False)
 
         # Detail tabs for review
         ppym.rename(columns={
@@ -616,12 +630,12 @@ if run_btn:
     st.download_button(
         label="Download Excel Workbook",
         data=out_buf.getvalue(),
-        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_v5d.xlsx",
+        file_name="WAPA_Recon_JE_Grouped_Deferrals_PAC_v5e.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
     with st.expander("Preview: JE Lines (first 200 rows)"):
-        st.dataframe(je_df.head(200))
+        st.dataframe(je_out.head(200))
 
     if not deferral_df.empty:
         with st.expander("Preview: Deferral Schedule (first 200 rows)"):
