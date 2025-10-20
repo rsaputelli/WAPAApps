@@ -44,6 +44,12 @@ import streamlit as st
 import streamlit as st
 from PIL import Image
 
+import streamlit as st
+import os
+
+st.sidebar.markdown("### 🧪 **STAGING ENVIRONMENT**")
+st.sidebar.info(f"Branch: modularization/wapa_recon | Env: {os.getenv('DEPLOY_ENV', 'staging')}")
+
 # --- Page setup ---
 st.set_page_config(
     page_icon="logo.png",   # Uses the Lutine logo in the browser tab
