@@ -1,0 +1,24 @@
+﻿routes:
+  "410*":
+    credit_account: "4100 · Membership Dues"
+  "4101":
+    credit_account: "4101 · Fellow Membership"
+  "4301":
+    credit_account: "4301 · Conference Sponsorship"
+  "4302":
+    credit_account: "4302 · Registration Income"
+
+vat:
+  dues_offset_account: "Membership Dues:4108 · Offset of CC Processing Fees"
+  other_offset_account: "Fall Conference Income:4314 · Offset of CC Processing Fees"
+
+pac:
+  liability_account: "2202 · Due to WAPA PAC"
+
+fees:
+  membership_keywords: ["membership", "dues"]
+  conference_keywords: ["registration", "conference", "online store order"]
+  accounts:
+    membership: "5104 · Membership Expenses:5104 · Dues Expense"
+    conference: "5316 · Fall Conference Expenses:5316 · Registration"
+    default:    "5012 · Administrative Expenses:5012 · Bank Charges/Credit Card Fees"
