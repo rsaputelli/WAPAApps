@@ -43,6 +43,14 @@ import pandas as pd
 import streamlit as st
 import streamlit as st
 from PIL import Image
+import pathlib
+# --- GL routing config (non-breaking) ---
+from rules.router import load_config, JERouter
+
+# Resolve repo-root/rules/config.yml relative to this file
+_CFG_PATH = (pathlib.Path(__file__).resolve().parents[2] / "rules" / "config.yml")
+_cfg = load_config(str(_CFG_PATH))
+_router = JERouter(_cfg)
 
 import streamlit as st
 import os
@@ -112,6 +120,32 @@ PAC_LIABILITY          = "2202 · Due to WAPA PAC"
 VAT_OFFSET_INCOME      = "Fall Conference Income:4314 · Offset of CC Processing Fees"
 DUES_VAT_OFFSET_INCOME = "Membership Dues:4108 · Offset of CC Processing Fees"
 UNMAPPED_REVIEW_ACCT   = "99999 · Needs Coding (Review)"
+
+# --- GL routing config (non-breaking) ---
+_CFG_PATH = (pathlib.Path(__file__).resolve().parents[2] / "rules" / "config.yml")
+try:
+    _ROUTER = JERouter(load_config(str(_CFG_PATH)))
+except Exception:
+    # If config file isn't present for any reason, keep running safely.
+    _ROUTER = JERouter({"routes": {}})
+
+def _route_credit_account_by_gl_from_row(row) -> str | None:
+    """
+    Return a credit account from rules/config.yml based on a YM GL code.
+    Safe fallback: returns None if no match or no GL code present.
+    """
+    # handle both pandas Series and dict-like rows
+    def _get(r, key):
+        if hasattr(r, "get"):  # dict/Series
+            return r.get(key)
+        return r[key] if key in r else None
+
+    for key in ("GL Code", "GL Code (O)", "GL Code (Column O)", "GL Code (col O)", "GLCode", "GL"):
+        gl = _get(row, key)
+        if gl is not None and str(gl).strip():
+            return _ROUTER.credit_account_for_gl(str(gl).strip())
+    return None
+
 
 # ------------------------- Helpers -------------------------
 
@@ -272,6 +306,20 @@ def is_pac_line(item_desc: str, gl_code: str, payment_desc: str) -> bool:
     if "2202" in g:
         return True
     return is_pac_text(item_desc) or is_pac_text(payment_desc) or ("pac" in g)
+
+def _route_credit_account_by_gl(row) -> str | None:
+    """
+    Return a credit account from rules/config.yml based on YM GL code.
+    Non-breaking: returns None if no match.
+    Tries common YM column names: 'GL Code', 'GL Code (O)', 'GL Code (Column O)'.
+    """
+    # Try the most likely column names from your YM export
+    for key in ("GL Code", "GL Code (O)", "GL Code (Column O)", "GL Code (col O)"):
+        if key in row and pd.notna(row[key]):
+            gl = str(row[key]).strip()
+            if gl:
+                return _router.credit_account_for_gl(gl)
+    return None
 
 # ------------------------- UI -------------------------
 st.markdown("""
