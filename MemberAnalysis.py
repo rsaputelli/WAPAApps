@@ -1,4 +1,3 @@
-
 import io
 import re
 import pandas as pd
@@ -97,33 +96,69 @@ def _normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: c.strip() for c in df.columns}).rename(columns=HEADER_MAP)
 
 def _read_any_table(uploaded_file, sheet_hint: str = None):
-    """Read CSV/XLSX/XLS and try to pick a relevant sheet if Excel."""
+    """
+    Robust loader for CSV/XLSX/XLS — includes handling for YM CSVs that are
+    actually UTF-16 with embedded NULL bytes (\x00), which cause pandas
+    ParserErrors on read_csv.
+    """
     name = getattr(uploaded_file, "name", "").lower()
-    try:
-        if name.endswith(".csv"):
+
+    # Read raw bytes for detection
+    uploaded_file.seek(0)
+    raw = uploaded_file.read()
+    uploaded_file.seek(0)
+
+    # ---------- 1) YM UTF-16 disguised CSV (NULL bytes present) ----------
+    if b"\x00" in raw:
+        try:
+            # YM CSV with UTF-16 LE encoding
+            return pd.read_csv(uploaded_file, encoding="utf-16"), None
+        except Exception:
+            # Fallback: Excel engine can also open UTF-16 CSV reliably
+            uploaded_file.seek(0)
+            return pd.read_excel(uploaded_file), None
+
+    # ---------- 2) Normal CSV logic ----------
+    if name.endswith(".csv"):
+        try:
+            return pd.read_csv(uploaded_file), None
+        except UnicodeDecodeError:
+            uploaded_file.seek(0)
+            return pd.read_csv(uploaded_file, encoding="latin-1"), None
+        except Exception:
+            # If all CSV attempts fail → try Excel fallback
+            uploaded_file.seek(0)
             try:
-                return pd.read_csv(uploaded_file), None
-            except UnicodeDecodeError:
-                uploaded_file.seek(0)
-                return pd.read_csv(uploaded_file, encoding="latin-1"), None
-        else:
-            xls = pd.ExcelFile(uploaded_file)
-            if sheet_hint and sheet_hint in xls.sheet_names:
-                df = pd.read_excel(xls, sheet_name=sheet_hint)
-                return df, sheet_hint
-            # Heuristic: pick sheet that contains ID or Member Type column
-            for sh in xls.sheet_names:
-                df = pd.read_excel(xls, sheet_name=sh)
-                if (ID_COL in df.columns) or (RAW_MEMBER_TYPE_COL in df.columns) or ("Member Type" in df.columns):
-                    return df, sh
-            sh = xls.sheet_names[0]
+                return pd.read_excel(uploaded_file), None
+            except Exception as e:
+                raise e
+
+    # ---------- 3) Excel files (xlsx/xls) ----------
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        if sheet_hint and sheet_hint in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet_hint)
+            return df, sheet_hint
+
+        # Heuristics to pick relevant sheet
+        for sh in xls.sheet_names:
             df = pd.read_excel(xls, sheet_name=sh)
-            return df, sh
+            if (ID_COL in df.columns) or \
+               (RAW_MEMBER_TYPE_COL in df.columns) or \
+               ("Member Type" in df.columns):
+                return df, sh
+
+        # Default: first sheet
+        sh = xls.sheet_names[0]
+        df = pd.read_excel(xls, sheet_name=sh)
+        return df, sh
+
     finally:
         try:
             uploaded_file.seek(0)
         except Exception:
             pass
+
 
 # ============================
 # Detection / preprocessing
@@ -575,3 +610,4 @@ with tab3:
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.info("Drop in your monthly summary workbooks to build the trend.")
+
