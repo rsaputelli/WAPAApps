@@ -13,6 +13,18 @@ if root_logo_path.exists():
 else:
     st.write("<!-- logo.png not found in repo root -->", unsafe_allow_html=True)
 
+# ===============================
+# Link to Instructions Document
+# ===============================
+st.markdown(
+    """
+    ### 📘 Instructions  
+    Download the full step-by-step guide here:  
+    [**WAPA Homepage Slider Update Instructions (.docx)**](https://raw.githubusercontent.com/rsaputelli/WAPAApps/release/apps/Slider%20Builder/%F0%9F%93%98%20WAPA%20Homepage%20Slider%20Update%20Instructions.docx)
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("WAPA Homepage Slider Replacement Tool")
 st.write("""
 Paste the full homepage HTML below, enter new slider images/links, and this tool will **replace only the carousel HTML** with updated code.
