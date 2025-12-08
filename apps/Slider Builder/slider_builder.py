@@ -5,10 +5,11 @@ from pathlib import Path
 # ===============================
 # Branding Header (Load Lutine logo from repo root)
 # ===============================
+# slider_builder.py → Slider Builder → apps → WAPAApps repo root
 root_logo_path = Path(__file__).resolve().parents[2] / "logo.png"
 
 if root_logo_path.exists():
-    st.image(str(root_logo_path), width=220)
+    st.image(str(root_logo_path), width=440)
 else:
     st.write("<!-- logo.png not found in repo root -->", unsafe_allow_html=True)
 
@@ -16,7 +17,9 @@ st.title("WAPA Homepage Slider Replacement Tool")
 st.write("""
 Paste the full homepage HTML below, enter new slider images/links, and this tool will **replace only the carousel HTML** with updated code.
 
-This version uses **YM-compatible arrows** (your custom arrow icons removed).
+✔ YM-compatible arrow controls  
+✔ Safe full-page replacement  
+✔ One-click clipboard copy  
 """)
 
 # ===============================
@@ -43,10 +46,17 @@ for i in range(num_slides):
     slides.append({"img": img, "link": link, "alt": alt})
 
 
+# ===============================
+# Build New Slider HTML
+# ===============================
 def build_slider(slides):
     """Generate updated YM-compatible slider with no custom arrow icons."""
+
     html = []
-    html.append('<div id="myCarousel" class="carousel slide carousel-fade" data-ride="carousel" data-interval="5000">')
+    html.append(
+        '<div id="myCarousel" class="carousel slide carousel-fade" '
+        'data-ride="carousel" data-interval="5000">'
+    )
 
     # Indicators
     html.append('  <ol class="carousel-indicators">')
@@ -72,12 +82,16 @@ def build_slider(slides):
         html.append("    </div>")
     html.append("  </div>")
 
-    # Controls (YM theme arrows only)
-    html.append('  <a class="left carousel-control" href="#myCarousel" role="button" data-slide="prev">')
+    # Controls (YM theme arrows only — no glyphicons)
+    html.append(
+        '  <a class="left carousel-control" href="#myCarousel" role="button" data-slide="prev">'
+    )
     html.append('    <span class="sr-only">Previous</span>')
     html.append("  </a>")
 
-    html.append('  <a class="right carousel-control" href="#myCarousel" role="button" data-slide="next">')
+    html.append(
+        '  <a class="right carousel-control" href="#myCarousel" role="button" data-slide="next">'
+    )
     html.append('    <span class="sr-only">Next</span>')
     html.append("  </a>")
 
@@ -87,7 +101,7 @@ def build_slider(slides):
 
 
 # ===============================
-# Generate Updated HTML
+# Generate Updated Full Page HTML
 # ===============================
 if st.button("Generate Updated Full Page HTML"):
 
@@ -97,6 +111,7 @@ if st.button("Generate Updated Full Page HTML"):
 
     new_slider = build_slider(slides)
 
+    # Pattern to find the existing YM slider block
     pattern = re.compile(
         r'<div id="myCarousel".*?</div>\s*</div>|<div id="myCarousel".*?</div>',
         re.DOTALL
@@ -108,20 +123,36 @@ if st.button("Generate Updated Full Page HTML"):
 
     updated_html = re.sub(pattern, new_slider, full_html_input, count=1)
 
-    st.success("Updated full-page HTML generated!")
+    st.success("Updated full-page HTML generated successfully!")
     st.code(updated_html, language="html")
 
-    # Save to session_state
-    st.session_state["updated_html"] = updated_html
+    # ===============================
+    # Copy-to-Clipboard Button (JavaScript-version)
+    # ===============================
+    safe_html_for_js = updated_html.replace("`", "\\`")
 
-    # Callback function to copy
-    def copy_to_clipboard():
-        st.clipboard(st.session_state["updated_html"])
-        st.session_state["copied"] = True
+    copy_button = f"""
+        <script>
+            function copyToClipboard() {{
+                const text = `{safe_html_for_js}`;
+                navigator.clipboard.writeText(text).then(function() {{
+                    alert("Full HTML copied to clipboard!");
+                }});
+            }}
+        </script>
 
-    # Copy button
-    st.button("Copy Full HTML to Clipboard", on_click=copy_to_clipboard)
+        <button onclick="copyToClipboard()" style="
+            background-color:#2c7be5;
+            color:white;
+            border:none;
+            padding:8px 16px;
+            border-radius:4px;
+            cursor:pointer;
+            margin-top:10px;
+        ">
+            Copy Full HTML to Clipboard
+        </button>
+    """
 
-    # Success message
-    if st.session_state.get("copied"):
-        st.success("Full HTML copied to clipboard!")
+    st.markdown(copy_button, unsafe_allow_html=True)
+
