@@ -126,6 +126,4 @@ if st.button("Generate Updated Full Page HTML"):
     st.success("Updated full-page HTML generated successfully!")
     st.code(updated_html, language="html")
 
-    st.success("Updated full-page HTML generated successfully!")
-    st.code(updated_html, language="html")
 
