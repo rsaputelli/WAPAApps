@@ -4,6 +4,7 @@ import re
 st.title("WAPA Homepage Slider Replacement Tool")
 st.write("""
 Paste the full homepage HTML below, enter new slider images/links, and this tool will **replace only the carousel HTML** with updated code.
+YM-compatible arrows are used automatically (your custom arrow icons removed).
 """)
 
 # --- Full HTML input from staff ---
@@ -25,8 +26,9 @@ for i in range(num_slides):
     alt = st.text_input(f"Alt text for Slide {i+1}", value=f"Slide {i+1}", key=f"alt_{i}")
     slides.append({"img": img, "link": link, "alt": alt})
 
+
 def build_slider(slides):
-    """Generate the full YM slider HTML block."""
+    """Generate updated YM-compatible slider (Option 2: no custom arrow icons)."""
 
     html = []
     html.append('<div id="myCarousel" class="carousel slide carousel-fade" data-ride="carousel" data-interval="5000">')
@@ -44,6 +46,7 @@ def build_slider(slides):
         active = " active" if i == 0 else ""
         html.append(f'    <div class="item{active}" style="text-align:center;">')
 
+        # Optional link wrapper
         if slide["link"]:
             html.append(f'      <a href="{slide["link"]}" target="_blank">')
 
@@ -55,13 +58,12 @@ def build_slider(slides):
         html.append("    </div>")
     html.append("  </div>")
 
-    # CONTROLS
+    # CONTROLS — Option 2 (NO glyphicon arrows, let YM inject arrows)
     html.append('  <a class="left carousel-control" href="#myCarousel" role="button" data-slide="prev">')
-    html.append('    <span class="glyphicon glyphicon-chevron-left" aria-hidden="true"></span>')
     html.append('    <span class="sr-only">Previous</span>')
     html.append("  </a>")
+
     html.append('  <a class="right carousel-control" href="#myCarousel" role="button" data-slide="next">')
-    html.append('    <span class="glyphicon glyphicon-chevron-right" aria-hidden="true"></span>')
     html.append('    <span class="sr-only">Next</span>')
     html.append("  </a>")
 
@@ -70,30 +72,27 @@ def build_slider(slides):
     return "\n".join(html)
 
 
-# ------------------------------
-# Generate updated HTML
-# ------------------------------
+# ===============================
+# Generate updated full-page HTML
+# ===============================
 if st.button("Generate Updated Full Page HTML"):
 
     if not full_html_input.strip():
         st.error("Please paste the full homepage HTML first.")
         st.stop()
 
-    # Build new slider block
     new_slider = build_slider(slides)
 
-    # Pattern to find the entire carousel block
+    # Regex pattern to find the entire existing slider block
     pattern = re.compile(
         r'<div id="myCarousel".*?</div>\s*</div>|<div id="myCarousel".*?</div>',
         re.DOTALL
     )
 
-    # Check if a slider exists in pasted HTML
     if not pattern.search(full_html_input):
         st.error("Could not find an existing <div id=\"myCarousel\"> slider block to replace.")
         st.stop()
 
-    # Replace old slider with new slider HTML
     updated_html = re.sub(pattern, new_slider, full_html_input, count=1)
 
     st.success("Updated full-page HTML generated!")
