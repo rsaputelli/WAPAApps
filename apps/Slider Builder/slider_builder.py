@@ -97,7 +97,6 @@ if st.button("Generate Updated Full Page HTML"):
 
     new_slider = build_slider(slides)
 
-    # Regex to find and replace existing slider block
     pattern = re.compile(
         r'<div id="myCarousel".*?</div>\s*</div>|<div id="myCarousel".*?</div>',
         re.DOTALL
@@ -110,11 +109,19 @@ if st.button("Generate Updated Full Page HTML"):
     updated_html = re.sub(pattern, new_slider, full_html_input, count=1)
 
     st.success("Updated full-page HTML generated!")
-
-    # Display updated code
     st.code(updated_html, language="html")
 
-    # Copy-to-clipboard button
-    if st.button("Copy Full HTML to Clipboard"):
-        st.clipboard(updated_html)
+    # Save to session_state
+    st.session_state["updated_html"] = updated_html
+
+    # Callback function to copy
+    def copy_to_clipboard():
+        st.clipboard(st.session_state["updated_html"])
+        st.session_state["copied"] = True
+
+    # Copy button
+    st.button("Copy Full HTML to Clipboard", on_click=copy_to_clipboard)
+
+    # Success message
+    if st.session_state.get("copied"):
         st.success("Full HTML copied to clipboard!")
