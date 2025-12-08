@@ -1,13 +1,27 @@
 import streamlit as st
 import re
+from pathlib import Path
+
+# ===============================
+# Branding Header (Load Lutine logo from repo root)
+# ===============================
+root_logo_path = Path(__file__).resolve().parents[2] / "logo.png"
+
+if root_logo_path.exists():
+    st.image(str(root_logo_path), width=220)
+else:
+    st.write("<!-- logo.png not found in repo root -->", unsafe_allow_html=True)
 
 st.title("WAPA Homepage Slider Replacement Tool")
 st.write("""
 Paste the full homepage HTML below, enter new slider images/links, and this tool will **replace only the carousel HTML** with updated code.
-YM-compatible arrows are used automatically (your custom arrow icons removed).
+
+This version uses **YM-compatible arrows** (your custom arrow icons removed).
 """)
 
-# --- Full HTML input from staff ---
+# ===============================
+# Full HTML Input
+# ===============================
 full_html_input = st.text_area(
     "Paste FULL homepage HTML here:",
     height=400,
@@ -15,7 +29,9 @@ full_html_input = st.text_area(
     placeholder="Paste the entire WAPA homepage HTML..."
 )
 
-# --- Number of slides ---
+# ===============================
+# Slide Inputs
+# ===============================
 num_slides = st.number_input("How many slides?", min_value=1, max_value=5, value=3)
 
 slides = []
@@ -28,25 +44,23 @@ for i in range(num_slides):
 
 
 def build_slider(slides):
-    """Generate updated YM-compatible slider (Option 2: no custom arrow icons)."""
-
+    """Generate updated YM-compatible slider with no custom arrow icons."""
     html = []
     html.append('<div id="myCarousel" class="carousel slide carousel-fade" data-ride="carousel" data-interval="5000">')
 
-    # INDICATORS
+    # Indicators
     html.append('  <ol class="carousel-indicators">')
     for i in range(len(slides)):
         active = ' class="active"' if i == 0 else ""
         html.append(f'    <li data-target="#myCarousel" data-slide-to="{i}"{active}></li>')
     html.append('  </ol>')
 
-    # SLIDES
+    # Slides
     html.append('  <div class="carousel-inner" role="listbox">')
     for i, slide in enumerate(slides):
         active = " active" if i == 0 else ""
         html.append(f'    <div class="item{active}" style="text-align:center;">')
 
-        # Optional link wrapper
         if slide["link"]:
             html.append(f'      <a href="{slide["link"]}" target="_blank">')
 
@@ -58,7 +72,7 @@ def build_slider(slides):
         html.append("    </div>")
     html.append("  </div>")
 
-    # CONTROLS — Option 2 (NO glyphicon arrows, let YM inject arrows)
+    # Controls (YM theme arrows only)
     html.append('  <a class="left carousel-control" href="#myCarousel" role="button" data-slide="prev">')
     html.append('    <span class="sr-only">Previous</span>')
     html.append("  </a>")
@@ -73,7 +87,7 @@ def build_slider(slides):
 
 
 # ===============================
-# Generate updated full-page HTML
+# Generate Updated HTML
 # ===============================
 if st.button("Generate Updated Full Page HTML"):
 
@@ -83,7 +97,7 @@ if st.button("Generate Updated Full Page HTML"):
 
     new_slider = build_slider(slides)
 
-    # Regex pattern to find the entire existing slider block
+    # Regex to find and replace existing slider block
     pattern = re.compile(
         r'<div id="myCarousel".*?</div>\s*</div>|<div id="myCarousel".*?</div>',
         re.DOTALL
@@ -96,4 +110,11 @@ if st.button("Generate Updated Full Page HTML"):
     updated_html = re.sub(pattern, new_slider, full_html_input, count=1)
 
     st.success("Updated full-page HTML generated!")
+
+    # Display updated code
     st.code(updated_html, language="html")
+
+    # Copy-to-clipboard button
+    if st.button("Copy Full HTML to Clipboard"):
+        st.clipboard(updated_html)
+        st.success("Full HTML copied to clipboard!")
