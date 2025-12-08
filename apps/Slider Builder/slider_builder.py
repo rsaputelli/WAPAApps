@@ -126,33 +126,5 @@ if st.button("Generate Updated Full Page HTML"):
     st.success("Updated full-page HTML generated successfully!")
     st.code(updated_html, language="html")
 
-    # ===============================
-    # Copy-to-Clipboard Button (JavaScript-version)
-    # ===============================
-    safe_html_for_js = updated_html.replace("`", "\\`")
 
-    copy_button = f"""
-        <script>
-            function copyToClipboard() {{
-                const text = `{safe_html_for_js}`;
-                navigator.clipboard.writeText(text).then(function() {{
-                    alert("Full HTML copied to clipboard!");
-                }});
-            }}
-        </script>
-
-        <button onclick="copyToClipboard()" style="
-            background-color:#2c7be5;
-            color:white;
-            border:none;
-            padding:8px 16px;
-            border-radius:4px;
-            cursor:pointer;
-            margin-top:10px;
-        ">
-            Copy Full HTML to Clipboard
-        </button>
-    """
-
-    st.markdown(copy_button, unsafe_allow_html=True)
 
